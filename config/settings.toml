@@ -1,0 +1,12 @@
+[market]
+symbol = "AAPL"
+ema_short = 10
+ema_long = 20
+threshold = 0.05
+cooldown_seconds = 300
+
+[execution]
+account_number = "REPLACE_ME"
+call_symbol = "AAPL  240119C00150000"
+put_symbol   = "AAPL  240119P00150000"
+quantity = 1
