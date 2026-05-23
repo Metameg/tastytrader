@@ -75,14 +75,16 @@ class Streamer:
                 msg = json.loads(raw)
                 await self._handle(msg, ws)
 
-    async def _wait_for(self, ws, expected_type: str) -> dict:
+    async def _wait_for(self, ws, expected_type: str, timeout: float = 10.0) -> dict:
         """Consume messages until one matching expected_type is received."""
-        async for raw in ws:
-            msg = json.loads(raw)
-            if msg.get("type") == "KEEPALIVE":
-                await ws.send(json.dumps({"type": "KEEPALIVE", "channel": 0}))
-            elif msg.get("type") == expected_type:
-                return msg
+        async with asyncio.timeout(timeout):
+            async for raw in ws:
+                msg = json.loads(raw)
+                if msg.get("type") == "KEEPALIVE":
+                    await ws.send(json.dumps({"type": "KEEPALIVE", "channel": 0}))
+                elif msg.get("type") == expected_type:
+                    return msg
+        raise ConnectionError(f"WebSocket closed before receiving {expected_type}")
 
     async def _handle(self, msg: dict, ws) -> None:
         msg_type = msg.get("type")
@@ -122,6 +124,8 @@ class Streamer:
         while True:
             try:
                 await self._connect_and_stream()
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
                 print(f"Streamer error: {exc!r} — reconnecting in {self._backoff}s")
                 await asyncio.sleep(self._backoff)

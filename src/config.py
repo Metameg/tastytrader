@@ -1,7 +1,10 @@
 import tomllib
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from dotenv import load_dotenv
+
+_PROJECT_ROOT = Path(__file__).parent.parent
 
 
 @dataclass
@@ -30,8 +33,8 @@ class AppConfig:
 
 
 def load_config(
-    settings_path: str = "config/settings.toml",
-    env_path: str = "config/.env",
+    settings_path: Path | str = _PROJECT_ROOT / "config/settings.toml",
+    env_path: Path | str = _PROJECT_ROOT / "config/.env",
 ) -> AppConfig:
     load_dotenv(env_path)
 

@@ -57,8 +57,9 @@ class Strategy:
         if self._state == StrategyState.COOLDOWN:
             if now >= self._cooldown_until:
                 self._state = StrategyState.WATCHING
-            else:
-                return
+                self._prev_short = short
+                self._prev_long = long
+            return
 
         if self._prev_short is not None and self._prev_long is not None:
             prev_diff = self._prev_short - self._prev_long
