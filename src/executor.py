@@ -33,6 +33,7 @@ class Executor:
             "order-type": "Limit",
             "time-in-force": "Day",
             "price": f"{mid:.2f}",
+            "price-effect": "Debit",
             "legs": [
                 {
                     "instrument-type": "Equity Option",

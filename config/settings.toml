@@ -6,7 +6,7 @@ threshold = 0.05
 cooldown_seconds = 300
 
 [execution]
-account_number = "REPLACE_ME"
+account_number = "5WX78966"
 call_symbol = "AAPL  240119C00150000"
 put_symbol   = "AAPL  240119P00150000"
 quantity = 1
