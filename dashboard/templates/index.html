@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tastytrader</title>
+  <link rel="stylesheet" href="/static/css/tokens.css">
+  <link rel="stylesheet" href="/static/css/layout.css">
+  <link rel="stylesheet" href="/static/css/components.css">
+</head>
+<body>
+  <header class="status-header">
+    <span class="header-brand">tastytrader</span>
+    <span class="header-account">{{ account_number }}</span>
+    <span class="header-nlv">NLV <span class="value">{{ net_liquidating_value }}</span></span>
+    <span class="header-pl neutral">Day P&amp;L <span class="value">—</span></span>
+    <span class="header-bp">BP <span class="value">{{ buying_power }}</span></span>
+    <span class="status-dot disconnected" title="disconnected"></span>
+  </header>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="sidebar-section-label">holdings</div>
+      <ul class="holdings-list" id="holdings-list">
+        {% if positions %}
+          {% for pos in positions %}
+          <li class="holding-row">{{ pos.symbol }}</li>
+          {% endfor %}
+        {% else %}
+          <li class="holding-row placeholder">—</li>
+        {% endif %}
+      </ul>
+    </aside>
+
+    <main class="main-content">
+      <div class="section-header">
+        <span class="section-title">positions</span>
+      </div>
+      <table class="positions-table" id="positions-table">
+        <thead>
+          <tr>
+            <th>symbol</th>
+            <th>type</th>
+            <th>qty</th>
+            <th>avg cost</th>
+            <th>mark</th>
+            <th>day p&amp;l</th>
+            <th>total p&amp;l</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if positions %}
+            {% for pos in positions %}
+            <tr>
+              <td>{{ pos.symbol }}</td>
+              <td>{{ pos.instrument_type }}</td>
+              <td>{{ pos.quantity }}</td>
+              <td>{{ pos.avg_cost }}</td>
+              <td class="neutral">—</td>
+              <td class="neutral">—</td>
+              <td class="neutral">—</td>
+            </tr>
+            {% endfor %}
+          {% else %}
+            <tr class="placeholder-row">
+              <td colspan="7">no positions</td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </main>
+
+    <aside class="detail-panel" id="detail-panel">
+      <div class="detail-placeholder">select a holding</div>
+    </aside>
+  </div>
+
+  <footer class="orders-bar">
+    <div class="orders-bar-label">open orders</div>
+    <div class="orders-list" id="orders-list">
+      {% if orders %}
+      <table class="orders-table">
+        <thead>
+          <tr>
+            <th>symbol</th>
+            <th>action</th>
+            <th>type</th>
+            <th>qty</th>
+            <th>price</th>
+            <th>status</th>
+            <th>time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for order in orders %}
+          <tr>
+            <td>{{ order.symbol }}</td>
+            <td>{{ order.action }}</td>
+            <td>{{ order.order_type }}</td>
+            <td>{{ order.quantity }}</td>
+            <td>{{ order.price }}</td>
+            <td>{{ order.status }}</td>
+            <td>{{ order.time }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="orders-empty">no open orders</div>
+      {% endif %}
+    </div>
+  </footer>
+
+  <script src="/static/js/main.js" defer></script>
+</body>
+</html>

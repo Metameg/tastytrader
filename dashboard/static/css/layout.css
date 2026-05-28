@@ -1,0 +1,95 @@
+/* shell layout */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* status header — attached, single row */
+.status-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-4);
+  background: var(--background-2);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+  font-size: var(--text-xs);
+}
+
+/* main shell — sidebar | content | detail */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) 1fr var(--detail-w);
+  grid-template-rows: 1fr;
+  position: fixed;
+  top: var(--header-h);
+  bottom: var(--footer-h);
+  left: 0;
+  right: 0;
+  overflow: hidden;
+}
+
+.sidebar {
+  background: var(--background-2);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-content {
+  background: var(--background);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.detail-panel {
+  background: var(--background-2);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: var(--sp-3);
+}
+
+/* orders footer bar */
+.orders-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: var(--footer-h);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-4);
+  background: var(--background-2);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-xs);
+  z-index: 100;
+}
+
+/* section header inside main content */
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--background-2);
+}
