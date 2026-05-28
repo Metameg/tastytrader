@@ -1,12 +1,37 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
+
+from src.auth import Auth
+
+
+def _mock_config():
+    cfg = MagicMock()
+    cfg.username = "testuser"
+    cfg.password = "testpass"
+    cfg.execution.account_number = "5WX78966"
+    return cfg
 
 
 @pytest.fixture(scope="module")
 def client():
-    from dashboard.app import app
-    with TestClient(app) as c:
-        yield c
+    mock_config = _mock_config()
+    mock_auth = Auth(session_token="test-token", remember_token="test-remember")
+    mock_balance = AsyncMock(return_value={
+        "account_number": "5WX78966",
+        "net_liquidating_value": "10000.00",
+        "buying_power": "5000.00",
+    })
+
+    with patch("dashboard.app.load_config", return_value=mock_config), \
+         patch("dashboard.app.login", new=AsyncMock(return_value=mock_auth)), \
+         patch("dashboard.app.fetch_balance", new=mock_balance), \
+         patch("dashboard.app.fetch_positions", new=AsyncMock(return_value=[])), \
+         patch("dashboard.app.fetch_orders", new=AsyncMock(return_value=[])):
+        from dashboard.app import app
+        with TestClient(app) as c:
+            yield c
 
 
 def test_root_returns_200_html(client):
