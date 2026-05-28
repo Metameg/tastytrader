@@ -1,5 +1,7 @@
+import httpx
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 @pytest.fixture(scope="module")
@@ -54,3 +56,93 @@ def test_app_has_config_loaded(client):
     from dashboard.app import app
     assert app.state.config is not None
     assert app.state.config.execution.account_number == "5WX78966"
+
+
+# --- DELETE /api/orders/{order_id} ---
+
+def test_delete_order_returns_200_on_success(client):
+    with patch("dashboard.app.cancel_order", new_callable=AsyncMock):
+        response = client.delete("/api/orders/123")
+    assert response.status_code == 200
+
+
+def test_delete_order_removes_order_from_state_optimistically(client):
+    from dashboard.app import app
+    app.state.dashboard.orders = [
+        {"id": 123, "symbol": "AAPL", "action": "Buy", "order_type": "Limit",
+         "quantity": 1, "price": "150.00", "status": "Live", "time": "10:00:00"},
+    ]
+    with patch("dashboard.app.cancel_order", new_callable=AsyncMock):
+        client.delete("/api/orders/123")
+    assert not any(str(o["id"]) == "123" for o in app.state.dashboard.orders)
+
+
+def test_delete_order_returns_error_when_api_rejects(client):
+    mock_api_response = MagicMock()
+    mock_api_response.status_code = 422
+    mock_api_response.text = "Order cannot be cancelled"
+    with patch("dashboard.app.cancel_order", new_callable=AsyncMock) as mock_cancel:
+        mock_cancel.side_effect = httpx.HTTPStatusError(
+            "422",
+            request=MagicMock(),
+            response=mock_api_response,
+        )
+        response = client.delete("/api/orders/123")
+    assert response.status_code >= 400
+
+
+# --- Cancel button visibility in orders table ---
+
+def test_cancel_button_shown_for_received_order(client):
+    from dashboard.app import app
+    app.state.dashboard.orders = [
+        {"id": 111, "symbol": "AAPL", "action": "Buy", "order_type": "Limit",
+         "quantity": 1, "price": "150.00", "status": "Received", "time": "10:00:00"},
+    ]
+    response = client.get("/")
+    app.state.dashboard.orders = []
+    assert 'data-order-id="111"' in response.text
+
+
+def test_cancel_button_shown_for_routed_order(client):
+    from dashboard.app import app
+    app.state.dashboard.orders = [
+        {"id": 222, "symbol": "AAPL", "action": "Buy", "order_type": "Limit",
+         "quantity": 1, "price": "150.00", "status": "Routed", "time": "10:00:00"},
+    ]
+    response = client.get("/")
+    app.state.dashboard.orders = []
+    assert 'data-order-id="222"' in response.text
+
+
+def test_cancel_button_shown_for_live_order(client):
+    from dashboard.app import app
+    app.state.dashboard.orders = [
+        {"id": 333, "symbol": "AAPL", "action": "Buy", "order_type": "Limit",
+         "quantity": 1, "price": "150.00", "status": "Live", "time": "10:00:00"},
+    ]
+    response = client.get("/")
+    app.state.dashboard.orders = []
+    assert 'data-order-id="333"' in response.text
+
+
+def test_cancel_button_absent_for_filled_order(client):
+    from dashboard.app import app
+    app.state.dashboard.orders = [
+        {"id": 444, "symbol": "AAPL", "action": "Buy", "order_type": "Limit",
+         "quantity": 1, "price": "150.00", "status": "Filled", "time": "10:00:00"},
+    ]
+    response = client.get("/")
+    app.state.dashboard.orders = []
+    assert 'data-order-id="444"' not in response.text
+
+
+def test_cancel_button_absent_for_cancelled_order(client):
+    from dashboard.app import app
+    app.state.dashboard.orders = [
+        {"id": 555, "symbol": "AAPL", "action": "Buy", "order_type": "Limit",
+         "quantity": 1, "price": "150.00", "status": "Cancelled", "time": "10:00:00"},
+    ]
+    response = client.get("/")
+    app.state.dashboard.orders = []
+    assert 'data-order-id="555"' not in response.text
