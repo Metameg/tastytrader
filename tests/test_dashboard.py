@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -134,3 +135,29 @@ async def test_fetch_positions_sends_auth_header():
 
     _, kwargs = mock_client.get.call_args
     assert kwargs["headers"]["Authorization"] == "my-token"
+
+
+# --- DashboardState broadcast ---
+
+async def test_broadcast_delivers_event_to_subscriber():
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.add_subscriber(queue)
+
+    await state.broadcast("quote", {"symbol": "AAPL", "last": 150.0})
+
+    assert not queue.empty()
+    event = queue.get_nowait()
+    assert event["type"] == "quote"
+    assert event["data"]["symbol"] == "AAPL"
+
+
+async def test_removed_subscriber_does_not_receive_broadcast():
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.add_subscriber(queue)
+    state.remove_subscriber(queue)
+
+    await state.broadcast("quote", {"symbol": "AAPL", "last": 150.0})
+
+    assert queue.empty()
