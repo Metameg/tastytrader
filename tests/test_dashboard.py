@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from dashboard.state import DashboardState
-from dashboard.api import fetch_balance, fetch_positions
+from dashboard.api import fetch_balance, fetch_positions, fetch_quote_token
 from src.models import PriceEvent
 
 
@@ -258,3 +258,46 @@ def test_on_quote_ema_long_none_before_20_warmup():
     assert item["data"]["ema_long"] is None, (
         f"ema_long should still be None after only 15 quotes; got {item['data']['ema_long']}"
     )
+
+
+# --- fetch_quote_token ---
+
+async def test_fetch_quote_token_returns_token_and_url():
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "token": "quote-tok-123",
+            "dxlink-url": "wss://tasty-openapi-ws.dxfeed.com/realtime",
+        }
+    }
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_quote_token(session_token="sess-tok")
+
+    assert result["token"] == "quote-tok-123"
+    assert result["dxlink_url"] == "wss://tasty-openapi-ws.dxfeed.com/realtime"
+
+
+async def test_fetch_quote_token_sends_auth_header():
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {"token": "t", "dxlink-url": "wss://example.com"}
+    }
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await fetch_quote_token(session_token="my-session-token")
+
+    _, kwargs = mock_client.get.call_args
+    assert kwargs["headers"]["Authorization"] == "my-session-token"
+    assert kwargs.get("headers") or mock_client.get.call_args[1]["headers"]
+    # verify endpoint
+    url_called = mock_client.get.call_args[0][0]
+    assert url_called.endswith("/api-quote-tokens")

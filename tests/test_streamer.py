@@ -102,7 +102,8 @@ async def test_add_quote_sends_feed_subscription_message():
     candle_cb = AsyncMock()
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=price_cb,
         candle_callback=candle_cb,
     )
@@ -145,7 +146,8 @@ async def test_add_candle_sends_candle_subscription():
     candle_cb = AsyncMock()
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=price_cb,
         candle_callback=candle_cb,
     )
@@ -210,7 +212,8 @@ async def test_quote_feed_data_triggers_price_callback():
     candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=price_cb,
         candle_callback=candle_cb,
     )
@@ -267,7 +270,8 @@ async def test_candle_feed_data_triggers_candle_callback():
     candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=price_cb,
         candle_callback=candle_cb,
     )
@@ -314,7 +318,8 @@ async def test_reconnect_resubscribes_symbols():
     candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=price_cb,
         candle_callback=candle_cb,
     )
@@ -370,7 +375,8 @@ async def test_feed_setup_includes_candle_fields():
     _handshake_responses(ws, [])
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=MagicMock(),
         candle_callback=MagicMock(),
     )
@@ -404,7 +410,8 @@ async def test_add_quote_before_connect_subscribed_on_connect():
     _handshake_responses(ws, [])
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=MagicMock(),
         candle_callback=MagicMock(),
     )
@@ -461,7 +468,8 @@ async def test_quote_with_zero_bid_does_not_call_callback():
     candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
-        session_token="tok",
+        quote_token="tok",
+        streamer_url="wss://mock",
         price_callback=price_cb,
         candle_callback=candle_cb,
     )

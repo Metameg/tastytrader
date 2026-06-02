@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 
 from src.auth import login
 from src.config import load_config
-from dashboard.api import fetch_balance, fetch_positions, fetch_orders
+from dashboard.api import fetch_balance, fetch_positions, fetch_orders, fetch_quote_token
 from dashboard.state import DashboardState
 from dashboard.streamer import DashboardStreamer
 
@@ -57,8 +57,10 @@ async def lifespan(app: FastAPI):
     try:
         auth = await login(app.state.config.username, app.state.config.password)
         app.state.session_token = auth.session_token
+        qt = await fetch_quote_token(auth.session_token)
         streamer = DashboardStreamer(
-            session_token=auth.session_token,
+            quote_token=qt["token"],
+            streamer_url=qt["dxlink_url"],
             price_callback=app.state.dashboard.on_quote,
             candle_callback=app.state.dashboard.on_candle,
         )

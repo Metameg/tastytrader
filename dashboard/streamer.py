@@ -9,8 +9,6 @@ import websockets
 
 from src.models import PriceEvent
 
-STREAMER_URL = "wss://streamer.cert.tastyworks.com"
-
 _SETUP = {
     "type": "SETUP", "channel": 0,
     "keepaliveTimeout": 60, "acceptKeepaliveTimeout": 60,
@@ -33,11 +31,13 @@ _FEED_SETUP = {
 class DashboardStreamer:
     def __init__(
         self,
-        session_token: str,
+        quote_token: str,
+        streamer_url: str,
         price_callback: Callable[[PriceEvent], None],
         candle_callback: Callable[[dict], None],
     ) -> None:
-        self._session_token = session_token
+        self._quote_token = quote_token
+        self._streamer_url = streamer_url
         self._price_callback = price_callback
         self._candle_callback = candle_callback
         self._quote_symbols: set[str] = set()
@@ -64,7 +64,7 @@ class DashboardStreamer:
             }))
 
     async def _connect_and_stream(self) -> None:
-        async with websockets.connect(STREAMER_URL) as ws:
+        async with websockets.connect(self._streamer_url) as ws:
             self._backoff = 5.0
             await self._handshake(ws)
             self._ws = ws          # assign AFTER handshake so add_quote fires only on live channel
@@ -77,7 +77,7 @@ class DashboardStreamer:
     async def _handshake(self, ws) -> None:
         await ws.send(json.dumps(_SETUP))
         await self._wait_for(ws, "SETUP")
-        await ws.send(json.dumps({"type": "AUTH", "channel": 0, "token": self._session_token}))
+        await ws.send(json.dumps({"type": "AUTH", "channel": 0, "token": self._quote_token}))
         await self._wait_for(ws, "AUTH_STATE")
         await ws.send(json.dumps(_CHANNEL_REQUEST))
         await self._wait_for(ws, "CHANNEL_OPENED")

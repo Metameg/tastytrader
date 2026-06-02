@@ -46,6 +46,23 @@ async def fetch_positions(
         ]
 
 
+async def fetch_quote_token(
+    session_token: str,
+    base_url: str = BASE_URL,
+) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{base_url}/api-quote-tokens",
+            headers={"Authorization": session_token},
+        )
+        resp.raise_for_status()
+        data = resp.json()["data"]
+        return {
+            "token": data["token"],
+            "dxlink_url": data["dxlink-url"],
+        }
+
+
 async def fetch_orders(
     session_token: str,
     account_number: str,
