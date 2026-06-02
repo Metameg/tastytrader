@@ -1,10 +1,11 @@
 from __future__ import annotations
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -12,6 +13,7 @@ from src.auth import login
 from src.config import load_config
 from dashboard.api import fetch_balance, fetch_positions, fetch_orders
 from dashboard.state import DashboardState
+from dashboard.streamer import DashboardStreamer
 
 _BASE = Path(__file__).parent
 _POLL_INTERVAL = 15
@@ -30,6 +32,12 @@ async def _refresh(app: FastAPI) -> None:
         state.buying_power = balance["buying_power"]
         state.positions = await fetch_positions(token, acct)
         state.orders = await fetch_orders(token, acct)
+        await state.broadcast("account", state.get_account_summary())
+        await state.broadcast("positions", {"positions": state.positions})
+        await state.broadcast("orders", {"orders": state.orders})
+        if hasattr(app.state, "streamer"):
+            for pos in state.positions:
+                app.state.streamer.add_quote(pos["symbol"])
     except Exception:
         pass
 
@@ -45,17 +53,29 @@ async def lifespan(app: FastAPI):
     app.state.config = load_config()
     app.state.dashboard = DashboardState()
     app.state.session_token = ""
+    streamer_task = None
     try:
         auth = await login(app.state.config.username, app.state.config.password)
         app.state.session_token = auth.session_token
+        streamer = DashboardStreamer(
+            session_token=auth.session_token,
+            price_callback=app.state.dashboard.on_quote,
+            candle_callback=app.state.dashboard.on_candle,
+        )
+        app.state.streamer = streamer
         await _refresh(app)
+        for pos in app.state.dashboard.positions:
+            streamer.add_quote(pos["symbol"])
+        streamer_task = asyncio.create_task(streamer.run())
     except Exception:
         pass
-    task = asyncio.create_task(_poll(app))
+    poll_task = asyncio.create_task(_poll(app))
     try:
         yield
     finally:
-        task.cancel()
+        poll_task.cancel()
+        if streamer_task:
+            streamer_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -78,6 +98,38 @@ async def index(request: Request):
             "orders": state.orders,
         },
     )
+
+
+@app.get("/stream/live")
+async def stream_live(request: Request):
+    state: DashboardState = request.app.state.dashboard
+    queue = await state.add_subscriber()
+
+    async def event_generator():
+        yield ": keepalive\n\n"
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            await state.remove_subscriber(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/quotes/{symbol}")
+async def get_quote(symbol: str, request: Request):
+    state: DashboardState = request.app.state.dashboard
+    return state.quotes.get(symbol, {})
 
 
 if __name__ == "__main__":
