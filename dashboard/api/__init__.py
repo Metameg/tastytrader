@@ -19,7 +19,7 @@ async def fetch_balance(
         return {
             "account_number": data["account-number"],
             "net_liquidating_value": data["net-liquidating-value"],
-            "buying_power": data["buying-power"],
+            "buying_power": data.get("derivative-buying-power", data.get("equity-buying-power", "—")),
         }
 
 

@@ -42,7 +42,7 @@ async def test_fetch_balance_normalises_fields():
         "data": {
             "account-number": "5WX78966",
             "net-liquidating-value": "10525.00",
-            "buying-power": "5000.00",
+            "derivative-buying-power": "5000.00",
         }
     }
     mock_client = AsyncMock()

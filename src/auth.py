@@ -31,5 +31,5 @@ async def login(username: str, password: str, base_url: str = BASE_URL) -> Auth:
         data = resp.json()["data"]
         return Auth(
             session_token=data["session-token"],
-            remember_token=data["remember-token"],
+            remember_token=data.get("remember-token", ""),
         )
