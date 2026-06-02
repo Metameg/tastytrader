@@ -76,6 +76,23 @@
   </div>
 
   <footer class="orders-bar">
+    <div class="order-form-panel">
+      <form id="order-form">
+        <input id="of-symbol" type="text" placeholder="symbol" required>
+        <select id="of-instrument-type">
+          <option value="Equity">Equity</option>
+          <option value="Equity Option">Equity Option</option>
+        </select>
+        <select id="of-action">
+          <option value="Buy to Open">Buy to Open</option>
+          <option value="Sell to Close">Sell to Close</option>
+        </select>
+        <input id="of-quantity" type="number" placeholder="qty" min="1" required>
+        <input id="of-limit-price" type="number" placeholder="limit" step="0.01" min="0.01" required>
+        <button type="submit" class="primary">place order</button>
+        <span id="order-feedback" class="order-feedback"></span>
+      </form>
+    </div>
     <div class="orders-bar-label">open orders</div>
     <div class="orders-list" id="orders-list">
       {% if orders %}
@@ -112,5 +129,6 @@
   </footer>
 
   <script src="/static/js/main.js" defer></script>
+  <script src="/static/js/order-form.js" defer></script>
 </body>
 </html>

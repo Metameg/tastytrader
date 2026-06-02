@@ -3,14 +3,15 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.auth import login
 from src.config import load_config
-from dashboard.api import fetch_balance, fetch_positions, fetch_orders
+from dashboard.api import fetch_balance, fetch_positions, fetch_orders, place_order
 from dashboard.state import DashboardState
 
 _BASE = Path(__file__).parent
@@ -78,6 +79,39 @@ async def index(request: Request):
             "orders": state.orders,
         },
     )
+
+
+@app.post("/api/orders")
+async def create_order(request: Request):
+    body = await request.json()
+    token: str = request.app.state.session_token
+    acct: str = request.app.state.config.execution.account_number
+    try:
+        order_id = await place_order(
+            session_token=token,
+            account_number=acct,
+            symbol=body["symbol"],
+            instrument_type=body["instrument_type"],
+            action=body["action"],
+            quantity=int(body["quantity"]),
+            limit_price=float(body["limit_price"]),
+        )
+        return {"order_id": order_id}
+    except httpx.HTTPStatusError as exc:
+        msg: str = str(exc)
+        try:
+            error_data = exc.response.json()
+            if isinstance(error_data, dict):
+                nested = error_data.get("error", {})
+                if isinstance(nested, dict) and nested.get("message"):
+                    msg = nested["message"]
+                else:
+                    msg = exc.response.text
+            else:
+                msg = exc.response.text
+        except Exception:
+            msg = exc.response.text
+        return JSONResponse(status_code=400, content={"error": msg})
 
 
 if __name__ == "__main__":
