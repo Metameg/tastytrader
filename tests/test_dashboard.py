@@ -222,3 +222,173 @@ async def test_cancel_order_raises_on_non_200_response():
         mock_cls.return_value.__aenter__.return_value = mock_client
         with pytest.raises(httpx.HTTPStatusError):
             await cancel_order(session_token="tok", account_number="5WX78966", order_id="abc123")
+
+
+# --- place_order ---
+
+async def test_place_order_builds_correct_body_for_equity():
+    from dashboard.api import place_order, BASE_URL
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"id": "ORD-001"}}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await place_order(
+            session_token="tok",
+            account_number="5WX78966",
+            symbol="AAPL",
+            instrument_type="Equity",
+            action="Buy to Open",
+            quantity=5,
+            limit_price=150.0,
+        )
+
+    args, kwargs = mock_client.post.call_args
+    assert args[0] == f"{BASE_URL}/accounts/5WX78966/orders"
+    body = kwargs["json"]
+    assert body["order-type"] == "Limit"
+    assert body["time-in-force"] == "Day"
+    assert body["price"] == "150.00"
+    leg = body["legs"][0]
+    assert leg["instrument-type"] == "Equity"
+    assert leg["symbol"] == "AAPL"
+    assert leg["quantity"] == 5
+    assert leg["action"] == "Buy to Open"
+
+
+async def test_place_order_builds_correct_body_for_equity_option():
+    from dashboard.api import place_order, BASE_URL
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"id": "ORD-002"}}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await place_order(
+            session_token="tok",
+            account_number="5WX78966",
+            symbol="AAPL  260117C00150000",
+            instrument_type="Equity Option",
+            action="Sell to Close",
+            quantity=1,
+            limit_price=2.50,
+        )
+
+    _, kwargs = mock_client.post.call_args
+    leg = kwargs["json"]["legs"][0]
+    assert leg["instrument-type"] == "Equity Option"
+    assert leg["symbol"] == "AAPL  260117C00150000"
+    assert leg["quantity"] == 1
+    assert leg["action"] == "Sell to Close"
+
+
+async def test_place_order_sets_price_effect_debit_for_buy_to_open():
+    from dashboard.api import place_order
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"id": "ORD-003"}}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await place_order(
+            session_token="tok",
+            account_number="5WX78966",
+            symbol="AAPL",
+            instrument_type="Equity",
+            action="Buy to Open",
+            quantity=1,
+            limit_price=100.0,
+        )
+
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["json"]["price-effect"] == "Debit"
+
+
+async def test_place_order_sets_price_effect_credit_for_sell_to_close():
+    from dashboard.api import place_order
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"id": "ORD-004"}}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await place_order(
+            session_token="tok",
+            account_number="5WX78966",
+            symbol="AAPL",
+            instrument_type="Equity",
+            action="Sell to Close",
+            quantity=1,
+            limit_price=100.0,
+        )
+
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["json"]["price-effect"] == "Credit"
+
+
+async def test_place_order_sends_auth_header():
+    from dashboard.api import place_order
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"id": "ORD-005"}}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await place_order(
+            session_token="my-secret-token",
+            account_number="5WX78966",
+            symbol="AAPL",
+            instrument_type="Equity",
+            action="Buy to Open",
+            quantity=1,
+            limit_price=150.0,
+        )
+
+    _, kwargs = mock_client.post.call_args
+    assert kwargs["headers"]["Authorization"] == "my-secret-token"
+
+
+async def test_place_order_returns_order_id_on_success():
+    from dashboard.api import place_order
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"id": "ORD-999"}}
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        order_id = await place_order(
+            session_token="tok",
+            account_number="5WX78966",
+            symbol="AAPL",
+            instrument_type="Equity",
+            action="Buy to Open",
+            quantity=1,
+            limit_price=150.0,
+        )
+
+    assert order_id == "ORD-999"

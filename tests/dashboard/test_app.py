@@ -146,3 +146,48 @@ def test_cancel_button_absent_for_cancelled_order(client):
     response = client.get("/")
     app.state.dashboard.orders = []
     assert 'data-order-id="555"' not in response.text
+
+
+# --- POST /api/orders ---
+
+def test_post_api_orders_returns_200_and_order_id(client):
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.return_value = "ORD-42"
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 2,
+                "limit_price": 155.50,
+            },
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["order_id"] == "ORD-42"
+
+
+def test_post_api_orders_returns_error_when_api_rejects(client):
+    mock_api_response = MagicMock()
+    mock_api_response.status_code = 422
+    mock_api_response.text = "Order rejected by exchange"
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.side_effect = httpx.HTTPStatusError(
+            "422",
+            request=MagicMock(),
+            response=mock_api_response,
+        )
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 1,
+                "limit_price": 150.0,
+            },
+        )
+    assert response.status_code != 500
+    data = response.json()
+    assert "error" in data
