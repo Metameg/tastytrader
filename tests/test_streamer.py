@@ -206,8 +206,8 @@ async def test_quote_feed_data_triggers_price_callback():
     ws = _make_mock_ws()
     _handshake_responses(ws, [feed_data_msg])
 
-    price_cb = AsyncMock()
-    candle_cb = AsyncMock()
+    price_cb = MagicMock()
+    candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
         session_token="tok",
@@ -263,8 +263,8 @@ async def test_candle_feed_data_triggers_candle_callback():
     ws = _make_mock_ws()
     _handshake_responses(ws, [feed_data_msg])
 
-    price_cb = AsyncMock()
-    candle_cb = AsyncMock()
+    price_cb = MagicMock()
+    candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
         session_token="tok",
@@ -310,8 +310,8 @@ async def test_reconnect_resubscribes_symbols():
 
     second_cm = _make_connected_context(second_ws)
 
-    price_cb = AsyncMock()
-    candle_cb = AsyncMock()
+    price_cb = MagicMock()
+    candle_cb = MagicMock()
 
     streamer = DashboardStreamer(
         session_token="tok",
@@ -356,3 +356,121 @@ async def test_reconnect_resubscribes_symbols():
     assert {"type": "Quote", "symbol": "AAPL"} in added, (
         f"Expected Quote/AAPL in re-subscription; got: {added}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — FEED_SETUP includes Candle in acceptEventFields
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_feed_setup_includes_candle_fields():
+    """The FEED_SETUP message sent during the handshake must include 'Candle'
+    in acceptEventFields so the server delivers candle data."""
+    ws = _make_mock_ws()
+    _handshake_responses(ws, [])
+
+    streamer = DashboardStreamer(
+        session_token="tok",
+        price_callback=MagicMock(),
+        candle_callback=MagicMock(),
+    )
+
+    cm = _make_connected_context(ws)
+    with patch("dashboard.streamer.websockets.connect", return_value=cm):
+        try:
+            await streamer._connect_and_stream()
+        except (StopAsyncIteration, Exception):
+            pass
+
+    sent_payloads = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+    feed_setup_msgs = [p for p in sent_payloads if p.get("type") == "FEED_SETUP"]
+    assert feed_setup_msgs, "Expected at least one FEED_SETUP message"
+
+    accept_fields = feed_setup_msgs[0].get("acceptEventFields", {})
+    assert "Candle" in accept_fields, (
+        f"Expected 'Candle' in acceptEventFields; got keys: {list(accept_fields.keys())}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — add_quote before connect: subscribed on first connect
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_add_quote_before_connect_subscribed_on_connect():
+    """add_quote() called before _connect_and_stream() must result in the
+    FEED_SUBSCRIPTION being sent as part of the initial connection handshake."""
+    ws = _make_mock_ws()
+    _handshake_responses(ws, [])
+
+    streamer = DashboardStreamer(
+        session_token="tok",
+        price_callback=MagicMock(),
+        candle_callback=MagicMock(),
+    )
+    streamer.add_quote("TSLA")
+
+    cm = _make_connected_context(ws)
+    with patch("dashboard.streamer.websockets.connect", return_value=cm):
+        try:
+            await streamer._connect_and_stream()
+        except (StopAsyncIteration, Exception):
+            pass
+
+    sent_payloads = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+    feed_sub_msgs = [p for p in sent_payloads if p.get("type") == "FEED_SUBSCRIPTION"]
+    assert feed_sub_msgs, "Expected at least one FEED_SUBSCRIPTION message"
+
+    added = [item for msg in feed_sub_msgs for item in msg.get("add", [])]
+    assert {"type": "Quote", "symbol": "TSLA"} in added, (
+        f"Expected Quote/TSLA in FEED_SUBSCRIPTION add list; got: {added}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — Quote with zero bid does not trigger price_callback
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_quote_with_zero_bid_does_not_call_callback():
+    """A Quote FEED_DATA event with bidPrice=0.0 must NOT trigger price_callback.
+    The implementation filters out zero/invalid bids to avoid bad price data."""
+    feed_data_msg = json.dumps(
+        {
+            "type": "FEED_DATA",
+            "channel": 1,
+            "data": [
+                [
+                    "Quote",
+                    [
+                        {
+                            "eventSymbol": "AAPL",
+                            "bidPrice": 0.0,
+                            "askPrice": 100.0,
+                        }
+                    ],
+                ]
+            ],
+        }
+    )
+
+    ws = _make_mock_ws()
+    _handshake_responses(ws, [feed_data_msg])
+
+    price_cb = MagicMock()
+    candle_cb = MagicMock()
+
+    streamer = DashboardStreamer(
+        session_token="tok",
+        price_callback=price_cb,
+        candle_callback=candle_cb,
+    )
+
+    cm = _make_connected_context(ws)
+    with patch("dashboard.streamer.websockets.connect", return_value=cm):
+        try:
+            await streamer._connect_and_stream()
+        except (StopAsyncIteration, Exception):
+            pass
+
+    price_cb.assert_not_called()

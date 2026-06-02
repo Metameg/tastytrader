@@ -7,6 +7,7 @@ import pytest
 
 from dashboard.state import DashboardState
 from dashboard.api import fetch_balance, fetch_positions
+from src.models import PriceEvent
 
 
 # --- DashboardState ---
@@ -172,4 +173,88 @@ async def test_remove_subscriber_stops_receiving_broadcasts():
 
     assert queue.empty(), (
         "Queue should be empty after remove_subscriber() — broadcast should not reach it"
+    )
+
+
+# --- DashboardState on_quote / EMA (Issue #4) ---
+
+def test_on_quote_updates_quotes_dict():
+    """on_quote() must store the latest price data for the symbol in quotes dict."""
+    state = DashboardState()
+    event = PriceEvent(symbol="AAPL", last=100.0, bid=99.0, ask=101.0, timestamp=1.0)
+
+    state.on_quote(event)
+
+    assert state.quotes["AAPL"]["last"] == 100.0
+    assert state.quotes["AAPL"]["bid"] == 99.0
+
+
+def test_on_quote_broadcasts_quote_event():
+    """on_quote() must place a quote event on each subscriber queue with
+    the correct event name and symbol in data."""
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    event = PriceEvent(symbol="AAPL", last=100.0, bid=99.0, ask=101.0, timestamp=1.0)
+    state.on_quote(event)
+
+    assert not queue.empty(), "Subscriber queue should contain the broadcast"
+    item = queue.get_nowait()
+    assert item["event"] == "quote"
+    assert item["data"]["symbol"] == "AAPL"
+
+
+def test_broadcast_to_multiple_subscribers():
+    """broadcast() must deliver the same event to every subscriber queue."""
+    state = DashboardState()
+    queue_a: asyncio.Queue = asyncio.Queue()
+    queue_b: asyncio.Queue = asyncio.Queue()
+    state.subscribers.extend([queue_a, queue_b])
+
+    event = PriceEvent(symbol="TSLA", last=200.0, bid=199.0, ask=201.0, timestamp=2.0)
+    state.on_quote(event)
+
+    assert not queue_a.empty(), "First subscriber should receive the broadcast"
+    assert not queue_b.empty(), "Second subscriber should receive the broadcast"
+    assert queue_a.get_nowait()["data"]["symbol"] == "TSLA"
+    assert queue_b.get_nowait()["data"]["symbol"] == "TSLA"
+
+
+def test_on_quote_ema_short_none_before_warmup():
+    """ema_short must be None until 10 quotes have been processed (EMA warmup period).
+    The 9th quote is still below the period=10 threshold, so ema_short stays None."""
+    state = DashboardState()
+
+    for i in range(8):
+        state.on_quote(PriceEvent(symbol="AAPL", last=float(100 + i), bid=99.0, ask=101.0, timestamp=float(i)))
+
+    last_queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(last_queue)
+    state.on_quote(PriceEvent(symbol="AAPL", last=108.0, bid=99.0, ask=101.0, timestamp=8.0))
+
+    item = last_queue.get_nowait()
+    assert item["data"]["ema_short"] is None, (
+        f"ema_short should be None before 10 quotes (period=10 warmup); got {item['data']['ema_short']}"
+    )
+
+
+def test_on_quote_ema_long_none_before_20_warmup():
+    """After 15 quotes, ema_short (period=10) is populated but ema_long (period=20)
+    is still None — it requires 20 quotes to warm up."""
+    state = DashboardState()
+
+    for i in range(14):
+        state.on_quote(PriceEvent(symbol="AAPL", last=float(100 + i), bid=99.0, ask=101.0, timestamp=float(i)))
+
+    last_queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(last_queue)
+    state.on_quote(PriceEvent(symbol="AAPL", last=114.0, bid=99.0, ask=101.0, timestamp=14.0))
+
+    item = last_queue.get_nowait()
+    assert item["data"]["ema_short"] is not None, (
+        "ema_short should be populated after 15 quotes (period=10 warmup complete)"
+    )
+    assert item["data"]["ema_long"] is None, (
+        f"ema_long should still be None after only 15 quotes; got {item['data']['ema_long']}"
     )
