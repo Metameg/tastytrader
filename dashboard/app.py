@@ -4,16 +4,20 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.auth import login
 from src.config import load_config
-from dashboard.api import fetch_balance, fetch_positions, fetch_orders, fetch_quote_token
+from dashboard.api import cancel_order, fetch_balance, fetch_positions, fetch_orders, fetch_quote_token, place_order
 from dashboard.state import DashboardState
 from dashboard.streamer import DashboardStreamer
+
+_VALID_ACTIONS: frozenset[str] = frozenset({"Buy to Open", "Sell to Close"})
+_VALID_INSTRUMENT_TYPES: frozenset[str] = frozenset({"Equity", "Equity Option"})
 
 _BASE = Path(__file__).parent
 _POLL_INTERVAL = 15
@@ -130,6 +134,76 @@ async def stream_live(request: Request):
 async def get_quote(symbol: str, request: Request):
     state: DashboardState = request.app.state.dashboard
     return state.quotes.get(symbol, {})
+
+
+@app.post("/api/orders")
+async def create_order(request: Request):
+    body = await request.json()
+    token: str = request.app.state.session_token
+    acct: str = request.app.state.config.execution.account_number
+    try:
+        symbol = str(body["symbol"]).strip()
+        action = body["action"]
+        instrument_type = body["instrument_type"]
+        quantity = int(body["quantity"])
+        limit_price = float(body["limit_price"])
+    except (KeyError, ValueError) as exc:
+        return JSONResponse(status_code=400, content={"error": f"Invalid request: {exc}"})
+
+    if not symbol:
+        return JSONResponse(status_code=400, content={"error": "symbol is required"})
+    if action not in _VALID_ACTIONS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid action '{action}'. Must be one of: {sorted(_VALID_ACTIONS)}"},
+        )
+    if instrument_type not in _VALID_INSTRUMENT_TYPES:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid instrument_type '{instrument_type}'. Must be one of: {sorted(_VALID_INSTRUMENT_TYPES)}"},
+        )
+    if quantity < 1:
+        return JSONResponse(status_code=400, content={"error": "quantity must be >= 1"})
+    if limit_price <= 0:
+        return JSONResponse(status_code=400, content={"error": "limit_price must be > 0"})
+
+    try:
+        order_id = await place_order(
+            session_token=token,
+            account_number=acct,
+            symbol=symbol,
+            instrument_type=instrument_type,
+            action=action,
+            quantity=quantity,
+            limit_price=limit_price,
+        )
+        return {"order_id": order_id}
+    except httpx.RequestError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Could not reach brokerage: {exc}"},
+        )
+    except httpx.HTTPStatusError as exc:
+        try:
+            error_data = exc.response.json()
+            nested = error_data.get("error", {}) if isinstance(error_data, dict) else {}
+            msg: str = (nested.get("message") if isinstance(nested, dict) else None) or exc.response.text
+        except Exception:
+            msg = exc.response.text
+        return JSONResponse(status_code=400, content={"error": msg})
+
+
+@app.delete("/api/orders/{order_id}")
+async def delete_order(order_id: str, request: Request):
+    token: str = request.app.state.session_token
+    acct: str = request.app.state.config.execution.account_number
+    state: DashboardState = request.app.state.dashboard
+    try:
+        await cancel_order(session_token=token, account_number=acct, order_id=order_id)
+        state.orders = [o for o in state.orders if str(o.get("id")) != order_id]
+        return {"cancelled": order_id}
+    except httpx.HTTPStatusError as exc:
+        return JSONResponse(status_code=exc.response.status_code, content={"error": exc.response.text})
 
 
 if __name__ == "__main__":

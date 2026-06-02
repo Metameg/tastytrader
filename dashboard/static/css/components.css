@@ -219,3 +219,46 @@ button.primary:hover { opacity: 0.9; }
 
 .chip.positive { background: var(--positive-bg); color: var(--positive); }
 .chip.negative { background: var(--negative-bg); color: var(--negative); }
+
+/* --- order form panel --- */
+.order-form-panel {
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.order-form-panel form {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.order-form-panel input,
+.order-form-panel select {
+  background: var(--input);
+  border: 1px solid var(--border);
+  color: var(--foreground);
+  font-size: var(--text-sm);
+  padding: var(--sp-1);
+  border-radius: var(--radius-btn);
+  font-family: var(--font-sans);
+}
+
+.order-form-panel input:focus,
+.order-form-panel select:focus {
+  outline: 1px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.order-form-panel #of-symbol    { width: 8rem; }
+.order-form-panel #of-quantity  { width: 4rem; }
+.order-form-panel #of-limit-price { width: 5rem; }
+
+.order-feedback {
+  font-size: var(--text-xs);
+  margin-left: var(--sp-2);
+}
+
+.feedback-success { color: var(--positive); }
+.feedback-error   { color: var(--negative); }
