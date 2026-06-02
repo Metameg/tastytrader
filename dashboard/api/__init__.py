@@ -126,7 +126,7 @@ async def place_order(
             headers={"Authorization": session_token},
         )
         resp.raise_for_status()
-        return resp.json()["data"]["id"]
+        return resp.json()["data"]["order"]["id"]
 
 
 async def cancel_order(

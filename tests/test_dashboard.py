@@ -398,7 +398,7 @@ async def test_place_order_builds_correct_body_for_equity():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-001"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-001"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -433,7 +433,7 @@ async def test_place_order_builds_correct_body_for_equity_option():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-002"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-002"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -463,7 +463,7 @@ async def test_place_order_sets_price_effect_debit_for_buy_to_open():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-003"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-003"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -489,7 +489,7 @@ async def test_place_order_sets_price_effect_credit_for_sell_to_close():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-004"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-004"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -515,7 +515,7 @@ async def test_place_order_sends_auth_header():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-005"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-005"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -541,7 +541,7 @@ async def test_place_order_returns_order_id_on_success():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-999"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-999"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -566,7 +566,7 @@ async def test_place_order_formats_price_with_two_decimal_places_for_whole_numbe
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-A"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-A"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -592,7 +592,7 @@ async def test_place_order_formats_price_with_two_decimal_places_for_one_decimal
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-B"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-B"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp
@@ -618,7 +618,7 @@ async def test_place_order_puts_quantity_value_into_leg():
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"data": {"id": "ORD-C"}}
+    mock_resp.json.return_value = {"data": {"order": {"id": "ORD-C"}}}
 
     mock_client = AsyncMock()
     mock_client.post.return_value = mock_resp

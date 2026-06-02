@@ -134,7 +134,8 @@ def test_cancel_button_absent_for_filled_order(client):
     ]
     response = client.get("/")
     app.state.dashboard.orders = []
-    assert 'data-order-id="444"' not in response.text
+    assert 'data-order-id="444"' in response.text          # row still rendered
+    assert 'class="cancel-btn" data-order-id="444"' not in response.text  # button absent
 
 
 def test_cancel_button_absent_for_cancelled_order(client):
@@ -145,7 +146,8 @@ def test_cancel_button_absent_for_cancelled_order(client):
     ]
     response = client.get("/")
     app.state.dashboard.orders = []
-    assert 'data-order-id="555"' not in response.text
+    assert 'data-order-id="555"' in response.text          # row still rendered
+    assert 'class="cancel-btn" data-order-id="555"' not in response.text  # button absent
 
 
 # --- POST /api/orders ---
