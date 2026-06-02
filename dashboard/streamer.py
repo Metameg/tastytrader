@@ -34,8 +34,8 @@ class DashboardStreamer:
     def __init__(
         self,
         session_token: str,
-        price_callback: Callable,
-        candle_callback: Callable,
+        price_callback: Callable[[PriceEvent], None],
+        candle_callback: Callable[[dict], None],
     ) -> None:
         self._session_token = session_token
         self._price_callback = price_callback
@@ -65,9 +65,9 @@ class DashboardStreamer:
 
     async def _connect_and_stream(self) -> None:
         async with websockets.connect(STREAMER_URL) as ws:
-            self._ws = ws
             self._backoff = 5.0
             await self._handshake(ws)
+            self._ws = ws          # assign AFTER handshake so add_quote fires only on live channel
             await self._subscribe_all(ws)
             async for raw in ws:
                 msg = json.loads(raw)

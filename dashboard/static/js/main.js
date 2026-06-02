@@ -17,7 +17,7 @@
   // --- Event: quote — update mark price cell for symbol ---
   es.addEventListener('quote', function (e) {
     const data = JSON.parse(e.data);
-    const row = document.querySelector('[data-symbol="' + data.symbol + '"]');
+    const row = document.querySelector('[data-symbol="' + CSS.escape(data.symbol) + '"]');
     if (!row) return;
     const cells = row.querySelectorAll('td');
     if (cells[4]) {

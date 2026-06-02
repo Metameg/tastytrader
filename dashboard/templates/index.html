@@ -51,7 +51,7 @@
         <tbody>
           {% if positions %}
             {% for pos in positions %}
-            <tr>
+            <tr data-symbol="{{ pos.symbol }}">
               <td>{{ pos.symbol }}</td>
               <td>{{ pos.instrument_type }}</td>
               <td>{{ pos.quantity }}</td>

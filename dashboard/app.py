@@ -64,8 +64,6 @@ async def lifespan(app: FastAPI):
         )
         app.state.streamer = streamer
         await _refresh(app)
-        for pos in app.state.dashboard.positions:
-            streamer.add_quote(pos["symbol"])
         streamer_task = asyncio.create_task(streamer.run())
     except Exception:
         pass
@@ -134,4 +132,4 @@ async def get_quote(symbol: str, request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("dashboard.app:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("dashboard.app:app", host="127.0.0.1", port=8000, reload=True)
