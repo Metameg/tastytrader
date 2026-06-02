@@ -97,6 +97,8 @@ async def create_order(request: Request):
             limit_price=float(body["limit_price"]),
         )
         return {"order_id": order_id}
+    except (KeyError, ValueError) as exc:
+        return JSONResponse(status_code=400, content={"error": f"Invalid request: {exc}"})
     except httpx.HTTPStatusError as exc:
         msg: str = str(exc)
         try:

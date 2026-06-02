@@ -191,3 +191,65 @@ def test_post_api_orders_returns_error_when_api_rejects(client):
     assert response.status_code != 500
     data = response.json()
     assert "error" in data
+
+
+def test_post_api_orders_response_contains_order_id_key(client):
+    """Success response must include the documented 'order_id' key."""
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.return_value = "ORD-77"
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "TSLA",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 10,
+                "limit_price": 200.0,
+            },
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert "order_id" in data
+    assert data["order_id"] == "ORD-77"
+
+
+def test_post_api_orders_coerces_string_quantity_to_int(client):
+    """Form sends fields as strings; route must cast quantity to int for place_order."""
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.return_value = "ORD-88"
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": "3",
+                "limit_price": "155.00",
+            },
+        )
+    assert response.status_code == 200
+    _, kwargs = mock_place.call_args
+    assert kwargs["quantity"] == 3
+    assert isinstance(kwargs["quantity"], int)
+
+
+def test_post_api_orders_returns_400_when_body_missing_required_field(client):
+    """Missing fields must not crash the server (no 500). Must return a 4xx with error."""
+    response = client.post(
+        "/api/orders",
+        json={"symbol": "AAPL"},
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_returns_400_on_empty_body(client):
+    """An empty body must not crash the server. Must return a 4xx with error."""
+    response = client.post(
+        "/api/orders",
+        json={},
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
