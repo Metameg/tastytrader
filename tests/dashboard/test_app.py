@@ -188,7 +188,7 @@ def test_post_api_orders_returns_error_when_api_rejects(client):
                 "limit_price": 150.0,
             },
         )
-    assert response.status_code != 500
+    assert response.status_code == 400
     data = response.json()
     assert "error" in data
 
@@ -251,5 +251,127 @@ def test_post_api_orders_returns_400_on_empty_body(client):
         json={},
     )
     assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+# --- Input validation allow-list tests ---
+
+def test_post_api_orders_rejects_invalid_action(client):
+    """action not in allow-list must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "action": "Buy to Close",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_invalid_instrument_type(client):
+    """instrument_type not in allow-list must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Future",
+            "action": "Buy to Open",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_zero_quantity(client):
+    """quantity of 0 must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": 0,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_negative_quantity(client):
+    """negative quantity must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": -5,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_missing_symbol(client):
+    """A body missing 'symbol' must return 400 (not 500)."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_blank_symbol(client):
+    """A blank/whitespace 'symbol' must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "   ",
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_returns_502_on_network_error(client):
+    """httpx.RequestError from place_order must return 502 (not 500)."""
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.side_effect = httpx.RequestError("connection refused")
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 1,
+                "limit_price": 150.0,
+            },
+        )
+    assert response.status_code == 502
     data = response.json()
     assert "error" in data

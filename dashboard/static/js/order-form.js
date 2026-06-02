@@ -9,7 +9,7 @@
     form.addEventListener('submit', function (event) {
       event.preventDefault();
 
-      var symbol = document.getElementById('of-symbol').value.trim();
+      var symbol = document.getElementById('of-symbol').value.trim().toUpperCase();
       var instrumentType = document.getElementById('of-instrument-type').value;
       var action = document.getElementById('of-action').value;
       var quantity = document.getElementById('of-quantity').value;

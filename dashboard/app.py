@@ -14,6 +14,9 @@ from src.config import load_config
 from dashboard.api import fetch_balance, fetch_positions, fetch_orders, place_order
 from dashboard.state import DashboardState
 
+_VALID_ACTIONS: frozenset[str] = frozenset({"Buy to Open", "Sell to Close"})
+_VALID_INSTRUMENT_TYPES: frozenset[str] = frozenset({"Equity", "Equity Option"})
+
 _BASE = Path(__file__).parent
 _POLL_INTERVAL = 15
 
@@ -87,30 +90,52 @@ async def create_order(request: Request):
     token: str = request.app.state.session_token
     acct: str = request.app.state.config.execution.account_number
     try:
+        symbol = str(body["symbol"]).strip()
+        action = body["action"]
+        instrument_type = body["instrument_type"]
+        quantity = int(body["quantity"])
+        limit_price = float(body["limit_price"])
+    except (KeyError, ValueError) as exc:
+        return JSONResponse(status_code=400, content={"error": f"Invalid request: {exc}"})
+
+    if not symbol:
+        return JSONResponse(status_code=400, content={"error": "symbol is required"})
+    if action not in _VALID_ACTIONS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid action '{action}'. Must be one of: {sorted(_VALID_ACTIONS)}"},
+        )
+    if instrument_type not in _VALID_INSTRUMENT_TYPES:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Invalid instrument_type '{instrument_type}'. Must be one of: {sorted(_VALID_INSTRUMENT_TYPES)}"},
+        )
+    if quantity < 1:
+        return JSONResponse(status_code=400, content={"error": "quantity must be >= 1"})
+    if limit_price <= 0:
+        return JSONResponse(status_code=400, content={"error": "limit_price must be > 0"})
+
+    try:
         order_id = await place_order(
             session_token=token,
             account_number=acct,
-            symbol=body["symbol"],
-            instrument_type=body["instrument_type"],
-            action=body["action"],
-            quantity=int(body["quantity"]),
-            limit_price=float(body["limit_price"]),
+            symbol=symbol,
+            instrument_type=instrument_type,
+            action=action,
+            quantity=quantity,
+            limit_price=limit_price,
         )
         return {"order_id": order_id}
-    except (KeyError, ValueError) as exc:
-        return JSONResponse(status_code=400, content={"error": f"Invalid request: {exc}"})
+    except httpx.RequestError as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"Could not reach brokerage: {exc}"},
+        )
     except httpx.HTTPStatusError as exc:
-        msg: str = str(exc)
         try:
             error_data = exc.response.json()
-            if isinstance(error_data, dict):
-                nested = error_data.get("error", {})
-                if isinstance(nested, dict) and nested.get("message"):
-                    msg = nested["message"]
-                else:
-                    msg = exc.response.text
-            else:
-                msg = exc.response.text
+            nested = error_data.get("error", {}) if isinstance(error_data, dict) else {}
+            msg: str = (nested.get("message") if isinstance(nested, dict) else None) or exc.response.text
         except Exception:
             msg = exc.response.text
         return JSONResponse(status_code=400, content={"error": msg})
