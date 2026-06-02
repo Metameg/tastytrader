@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -134,3 +137,39 @@ async def test_fetch_positions_sends_auth_header():
 
     _, kwargs = mock_client.get.call_args
     assert kwargs["headers"]["Authorization"] == "my-token"
+
+
+# --- DashboardState broadcast / subscriber (Issue #4) ---
+
+async def test_add_subscriber_returns_queue_that_receives_broadcasts():
+    """add_subscriber() returns an asyncio.Queue; broadcasting an event
+    places exactly one item on that queue with the correct event name and data."""
+    state = DashboardState()
+
+    queue = await state.add_subscriber()
+
+    assert isinstance(queue, asyncio.Queue), (
+        f"Expected asyncio.Queue from add_subscriber(), got {type(queue)}"
+    )
+
+    await state.broadcast("quote", {"symbol": "AAPL", "last": 100.0})
+
+    assert not queue.empty(), "Queue should contain the broadcast event"
+    item = queue.get_nowait()
+    assert item["event"] == "quote"
+    assert item["data"]["symbol"] == "AAPL"
+
+
+async def test_remove_subscriber_stops_receiving_broadcasts():
+    """After remove_subscriber(queue), subsequent broadcasts do NOT
+    add anything to that queue."""
+    state = DashboardState()
+
+    queue = await state.add_subscriber()
+    await state.remove_subscriber(queue)
+
+    await state.broadcast("quote", {"symbol": "AAPL", "last": 100.0})
+
+    assert queue.empty(), (
+        "Queue should be empty after remove_subscriber() — broadcast should not reach it"
+    )
