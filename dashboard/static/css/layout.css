@@ -155,3 +155,30 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .holdings-nav { transition: none; }
 }
+
+/* ── DETAIL PANEL — hidden on mobile ────────────── */
+.detail-panel {
+  display: none;
+}
+
+/* ── WIDE DESKTOP (≥1024px) ─────────────────────── */
+@media (min-width: 1024px) {
+  .panels-area {
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .panels-column {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .detail-panel {
+    display: flex;
+    width: 280px;
+    flex-shrink: 0;
+  }
+}
