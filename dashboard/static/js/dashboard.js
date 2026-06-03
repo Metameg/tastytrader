@@ -131,9 +131,7 @@ function updateDetailPnl(symbol, qty, avgCost, quote) {
   const mark = (bid != null && ask != null) ? (bid + ask) / 2 : last;
   if (mark == null) return;
 
-  // Read instrument type from the selected row's data attribute
-  const row = document.querySelector(`tr[data-symbol="${CSS.escape(symbol)}"][data-selected]`);
-  const isOption = row?.dataset.instrumentType?.includes('Option') ?? false;
+  const isOption = selectedRow?.dataset.instrumentType?.includes('Option') ?? false;
   const multiplier = isOption ? 100 : 1;
   const pnl = (mark - parseFloat(avgCost)) * parseInt(qty, 10) * multiplier;
 
@@ -185,6 +183,17 @@ function handlePositions(positions) {
   }
 
   tbody.innerHTML = rows.join('') || '<tr class="placeholder-row"><td colspan="7">no positions</td></tr>';
+
+  // Re-attach selected state after DOM rebuild
+  if (selectedSymbol) {
+    const reselected = tbody.querySelector(`tr[data-symbol="${CSS.escape(selectedSymbol)}"]`);
+    if (reselected) {
+      reselected.setAttribute('data-selected', '');
+      selectedRow = reselected;
+    } else {
+      selectedRow = null;
+    }
+  }
 }
 
 function escapeHtml(str) {
