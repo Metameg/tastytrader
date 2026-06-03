@@ -1000,3 +1000,148 @@ async def test_fetch_positions_includes_current_price_field():
         positions = await fetch_positions(session_token="tok", account_number="5WX78966")
 
     assert "current_price" in positions[0]
+
+
+# --- Issue #6: parse_occ (OCC symbol parser) ---
+
+def test_parse_occ_call_aapl():
+    """AAPL call option: underlying trimmed, expiry human-readable, type=Call, strike as float."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C00150000")
+    assert result == {
+        "underlying": "AAPL",
+        "expiry": "Jan 19 2024",
+        "option_type": "Call",
+        "strike": 150.0,
+    }
+
+
+def test_parse_occ_put_aapl():
+    """AAPL put option: option_type must be 'Put' when symbol contains 'P'."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119P00150000")
+    assert result == {
+        "underlying": "AAPL",
+        "expiry": "Jan 19 2024",
+        "option_type": "Put",
+        "strike": 150.0,
+    }
+
+
+def test_parse_occ_call_spy():
+    """SPY call: 3-char underlying right-padded to 6 chars in the symbol string."""
+    from dashboard.state import parse_occ
+    result = parse_occ("SPY   240119C00450000")
+    assert result == {
+        "underlying": "SPY",
+        "expiry": "Jan 19 2024",
+        "option_type": "Call",
+        "strike": 450.0,
+    }
+
+
+def test_parse_occ_underlying_shorter_than_6_chars_qqq():
+    """QQQ has an underlying shorter than 6 chars — spaces must be stripped correctly."""
+    from dashboard.state import parse_occ
+    result = parse_occ("QQQ   240119C00400000")
+    assert result is not None
+    assert result["underlying"] == "QQQ"
+    assert result["option_type"] == "Call"
+    assert result["strike"] == 400.0
+
+
+def test_parse_occ_equity_symbol_returns_none():
+    """Plain equity ticker like 'AAPL' (no date/type/strike) must return None."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL")
+    assert result is None
+
+
+def test_parse_occ_fractional_strike_price():
+    """Strike 00250050 encodes $250.05 — fractional cents must parse correctly."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C00250050")
+    assert result is not None
+    assert result["strike"] == pytest.approx(250.05)
+
+
+def test_parse_occ_rejects_symbol_longer_than_21_chars():
+    """22-char string must not match — fullmatch anchors both ends."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C001500000")  # 22 chars
+    assert result is None
+
+
+def test_parse_occ_rejects_lowercase_underlying():
+    """Regex [A-Z ] requires uppercase — lowercase underlying must return None."""
+    from dashboard.state import parse_occ
+    result = parse_occ("aapl  240119C00150000")
+    assert result is None
+
+
+def test_parse_occ_rejects_invalid_date():
+    """Month 13 is not a valid date — strptime must reject it and return None."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  991399C00150000")
+    assert result is None
+
+
+def test_parse_occ_zero_strike_is_valid():
+    """Strike encoded as 00000000 is $0.00 — zero is a valid (if unusual) strike."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C00000000")
+    assert result is not None
+    assert result["strike"] == pytest.approx(0.0)
+    assert result["underlying"] == "AAPL"
+    assert result["option_type"] == "Call"
+
+
+def test_parse_occ_single_char_underlying():
+    """Underlying 'S' padded to 6 chars — stripping spaces must yield 'S'."""
+    from dashboard.state import parse_occ
+    result = parse_occ("S     240119C00050000")
+    assert result is not None
+    assert result["underlying"] == "S"
+    assert result["strike"] == pytest.approx(50.0)
+    assert result["option_type"] == "Call"
+
+
+def test_parse_occ_whitespace_only_underlying_returns_none():
+    """Six spaces with no letter chars — underlying strips to '' which is invalid.
+    Must return None so the detail panel never displays an empty ticker."""
+    from dashboard.state import parse_occ
+    result = parse_occ("      240119C00150000")
+    assert result is None
+
+
+# --- Issue #6: on_quote stores all keys required by the detail panel ---
+
+def test_on_quote_quote_dict_has_required_detail_panel_keys():
+    """state.quotes[symbol] must contain all keys the detail panel JS reads,
+    including ema_short and ema_long (even when still None during warm-up)."""
+    state = DashboardState()
+    event = PriceEvent(symbol="AAPL", last=150.0, bid=149.5, ask=150.5, timestamp=1.0)
+    state.on_quote(event)
+    q = state.quotes["AAPL"]
+    for key in ("symbol", "last", "bid", "ask", "ema_short", "ema_long"):
+        assert key in q, f"Missing key '{key}' in quotes dict"
+
+
+def test_on_quote_ema_keys_are_none_during_warmup():
+    """During warm-up (fewer than 10 ticks) both EMA keys exist but hold None."""
+    state = DashboardState()
+    event = PriceEvent(symbol="AAPL", last=150.0, bid=149.5, ask=150.5, timestamp=1.0)
+    state.on_quote(event)
+    q = state.quotes["AAPL"]
+    assert q["ema_short"] is None
+    assert q["ema_long"] is None
+
+
+def test_on_quote_ema_short_populated_after_warmup():
+    """After 10 ticks ema_short must be a float; ema_long still None until tick 20."""
+    state = DashboardState()
+    for i in range(10):
+        state.on_quote(PriceEvent(symbol="AAPL", last=float(100 + i), bid=99.0, ask=101.0, timestamp=float(i)))
+    q = state.quotes["AAPL"]
+    assert isinstance(q["ema_short"], float)
+    assert q["ema_long"] is None

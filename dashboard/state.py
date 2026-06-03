@@ -132,6 +132,8 @@ def parse_occ(symbol: str) -> dict | None:
     if not m:
         return None
     underlying = m.group(1).strip()
+    if not underlying:
+        return None
     date_str = m.group(2)
     opt_char = m.group(3)
     strike_raw = m.group(4)
