@@ -1,5 +1,7 @@
 const statusDot = document.querySelector('.status-dot');
 let es;
+let selectedSymbol = null;
+let selectedRow = null;
 
 function connect() {
   es = new EventSource('/stream/live');
@@ -38,6 +40,107 @@ function handleQuote(quote) {
       chip.className = 'chip ' + (pnl > 0 ? 'pl-positive' : pnl < 0 ? 'pl-negative' : 'neutral');
     }
   });
+
+  // Update detail panel if it's open for this symbol
+  if (selectedSymbol === symbol) {
+    updateDetailQuote(symbol, quote);
+    if (selectedRow) {
+      updateDetailPnl(symbol, selectedRow.dataset.qty, selectedRow.dataset.avgCost, quote);
+    }
+  }
+}
+
+function parseOcc(symbol) {
+  // OCC: 6-char underlying (right-padded) + YYMMDD + C/P + 8-digit strike*1000
+  const m = symbol.match(/^([A-Z ]{6})(\d{6})([CP])(\d{8})$/);
+  if (!m) return null;
+  const underlying = m[1].trim();
+  const dateStr = m[2];   // YYMMDD
+  const optChar = m[3];
+  const strikeRaw = parseInt(m[4], 10);
+
+  const yy = parseInt(dateStr.slice(0, 2), 10);
+  const mm = parseInt(dateStr.slice(2, 4), 10) - 1; // 0-indexed
+  const dd = parseInt(dateStr.slice(4, 6), 10);
+  const year = 2000 + yy;
+  const expiry = new Date(year, mm, dd);
+  const expStr = expiry.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  return {
+    underlying,
+    expiry: expStr,
+    option_type: optChar === 'C' ? 'Call' : 'Put',
+    strike: strikeRaw / 1000,
+  };
+}
+
+function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
+  const empty   = document.getElementById('detail-empty');
+  const content = document.getElementById('detail-content');
+
+  // Symbol header
+  document.getElementById('detail-symbol').textContent = formatSymbol(symbol);
+  document.getElementById('detail-type-chip').textContent =
+    instrumentType === 'Equity Option' ? 'option' : 'equity';
+
+  // Option fields
+  const optFields = document.getElementById('detail-option-fields');
+  if (instrumentType === 'Equity Option') {
+    const parsed = parseOcc(symbol);
+    if (parsed) {
+      document.getElementById('detail-underlying').textContent  = parsed.underlying;
+      document.getElementById('detail-expiry').textContent      = parsed.expiry;
+      document.getElementById('detail-option-type').textContent = parsed.option_type;
+      document.getElementById('detail-strike').textContent      = '$' + parsed.strike.toFixed(2);
+    }
+    optFields.removeAttribute('hidden');
+  } else {
+    optFields.setAttribute('hidden', '');
+  }
+
+  // Live quote fields (may be null on first populate before warm-up)
+  updateDetailQuote(symbol, quote);
+
+  // Cost basis
+  document.getElementById('detail-avg-cost').textContent =
+    avgCost != null ? '$' + parseFloat(avgCost).toFixed(2) : '—';
+
+  // P&L (will also be updated live in updateDetailQuote)
+  updateDetailPnl(symbol, qty, avgCost, quote);
+
+  // Show content, hide empty state
+  empty.setAttribute('hidden', '');
+  content.removeAttribute('hidden');
+}
+
+function updateDetailQuote(symbol, quote) {
+  if (!quote) return;
+  const { last, bid, ask, ema_short, ema_long } = quote;
+
+  const fmt = v => (v != null ? v.toFixed(2) : '—');
+  document.getElementById('detail-last').textContent      = fmt(last);
+  document.getElementById('detail-bid').textContent       = fmt(bid);
+  document.getElementById('detail-ask').textContent       = fmt(ask);
+  document.getElementById('detail-ema-short').textContent = fmt(ema_short);
+  document.getElementById('detail-ema-long').textContent  = fmt(ema_long);
+}
+
+function updateDetailPnl(symbol, qty, avgCost, quote) {
+  if (!quote || qty == null || avgCost == null) return;
+  const { bid, ask, last } = quote;
+  const mark = (bid != null && ask != null) ? (bid + ask) / 2 : last;
+  if (mark == null) return;
+
+  // Read instrument type from the selected row's data attribute
+  const row = document.querySelector(`tr[data-symbol="${CSS.escape(symbol)}"][data-selected]`);
+  const isOption = row?.dataset.instrumentType?.includes('Option') ?? false;
+  const multiplier = isOption ? 100 : 1;
+  const pnl = (mark - parseFloat(avgCost)) * parseInt(qty, 10) * multiplier;
+
+  const el = document.getElementById('detail-open-pnl');
+  el.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+  el.className = 'detail-value detail-mono ' +
+    (pnl > 0 ? 'detail-pnl-positive' : pnl < 0 ? 'detail-pnl-negative' : '');
 }
 
 function formatSymbol(sym) {
@@ -109,12 +212,46 @@ function buildRow(pos, isSubRow) {
 }
 
 document.addEventListener('click', e => {
-  const btn = e.target.closest('[data-cancel-order]');
-  if (!btn) return;
-  const orderId = btn.dataset.cancelOrder;
-  fetch(`/api/orders/${orderId}`, { method: 'DELETE' }).then(r => {
-    if (r.ok) btn.closest('tr')?.remove();
-  });
+  // Cancel order button
+  const cancelBtn = e.target.closest('[data-cancel-order]');
+  if (cancelBtn) {
+    const orderId = cancelBtn.dataset.cancelOrder;
+    fetch(`/api/orders/${orderId}`, { method: 'DELETE' }).then(r => {
+      if (r.ok) cancelBtn.closest('tr')?.remove();
+    });
+    return;
+  }
+
+  // Position row click → open detail panel
+  const tr = e.target.closest('#positions-table tbody tr');
+  if (!tr) return;
+
+  const symbol = tr.dataset.symbol;
+  if (!symbol) return;
+
+  // Deselect previous row
+  if (selectedRow) selectedRow.removeAttribute('data-selected');
+
+  // Select new row
+  tr.setAttribute('data-selected', '');
+  selectedRow = tr;
+  selectedSymbol = symbol;
+
+  const instrumentType = tr.dataset.instrumentType ?? 'Equity';
+  const qty     = tr.dataset.qty;
+  const avgCost = tr.dataset.avgCost;
+
+  // Fetch current quote, then populate panel
+  fetch(`/api/quotes/${encodeURIComponent(symbol)}`)
+    .then(r => r.json())
+    .then(quote => {
+      // quote may be empty object {} if not yet streamed
+      populateDetailPanel(symbol, instrumentType, qty, avgCost,
+        Object.keys(quote).length ? quote : null);
+    })
+    .catch(() => {
+      populateDetailPanel(symbol, instrumentType, qty, avgCost, null);
+    });
 });
 
 connect();
