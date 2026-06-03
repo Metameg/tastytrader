@@ -3,6 +3,8 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -56,6 +58,55 @@ def test_app_has_config_loaded(client):
     from dashboard.app import app
     assert app.state.config is not None
     assert app.state.config.execution.account_number == "5WX78966"
+
+
+# --- _refresh order filtering ---
+
+def test_refresh_filters_cancelled_orders_from_state(client):
+    """Poll must not resurrect cancelled orders; only open statuses stored."""
+    from dashboard.app import app, _refresh
+
+    app.state.session_token = "fake-token"
+    cancelled = {"id": 9, "symbol": "AAPL", "status": "Cancelled", "action": "Buy to Open",
+                 "order_type": "Limit", "quantity": 1, "price": "1.00", "time": "10:00:00"}
+    live = {"id": 10, "symbol": "TSLA", "status": "Live", "action": "Buy to Open",
+            "order_type": "Limit", "quantity": 1, "price": "1.00", "time": "10:00:00"}
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {"account_number": "X", "net_liquidating_value": "0", "buying_power": "0"}
+        mock_pos.return_value = []
+        mock_ord.return_value = [cancelled, live]
+        asyncio.run(_refresh(app))
+
+    ids = [o["id"] for o in app.state.dashboard.orders]
+    assert 9 not in ids
+    assert 10 in ids
+
+
+def test_refresh_filters_filled_and_rejected_orders(client):
+    from dashboard.app import app, _refresh
+
+    app.state.session_token = "fake-token"
+    orders = [
+        {"id": 1, "status": "Filled",   "symbol": "A", "action": "Buy to Open", "order_type": "Limit", "quantity": 1, "price": "1", "time": ""},
+        {"id": 2, "status": "Rejected", "symbol": "B", "action": "Buy to Open", "order_type": "Limit", "quantity": 1, "price": "1", "time": ""},
+        {"id": 3, "status": "Received", "symbol": "C", "action": "Buy to Open", "order_type": "Limit", "quantity": 1, "price": "1", "time": ""},
+    ]
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {"account_number": "X", "net_liquidating_value": "0", "buying_power": "0"}
+        mock_pos.return_value = []
+        mock_ord.return_value = orders
+        asyncio.run(_refresh(app))
+
+    stored_ids = [o["id"] for o in app.state.dashboard.orders]
+    assert 1 not in stored_ids  # Filled
+    assert 2 not in stored_ids  # Rejected
+    assert 3 in stored_ids      # Received — open
 
 
 # --- DELETE /api/orders/{order_id} ---

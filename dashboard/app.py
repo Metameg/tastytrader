@@ -18,6 +18,7 @@ from dashboard.streamer import DashboardStreamer
 
 _VALID_ACTIONS: frozenset[str] = frozenset({"Buy to Open", "Sell to Close"})
 _VALID_INSTRUMENT_TYPES: frozenset[str] = frozenset({"Equity", "Equity Option"})
+_OPEN_ORDER_STATUSES: frozenset[str] = frozenset({"Received", "Routed", "Live"})
 
 _BASE = Path(__file__).parent
 _POLL_INTERVAL = 15
@@ -35,7 +36,8 @@ async def _refresh(app: FastAPI) -> None:
         state.net_liquidating_value = balance["net_liquidating_value"]
         state.buying_power = balance["buying_power"]
         state.positions = await fetch_positions(token, acct)
-        state.orders = await fetch_orders(token, acct)
+        all_orders = await fetch_orders(token, acct)
+        state.orders = [o for o in all_orders if o.get("status") in _OPEN_ORDER_STATUSES]
         await state.broadcast("account", state.get_account_summary())
         await state.broadcast("positions", {"positions": state.positions})
         await state.broadcast("orders", {"orders": state.orders})
