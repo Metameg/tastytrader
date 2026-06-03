@@ -42,6 +42,7 @@ async def fetch_positions(
                 "quantity": int(item["quantity"]),
                 "avg_cost": item.get("average-open-price", "—"),
                 "current_price": None,
+                "pl": None,
             }
             for item in items
         ]
