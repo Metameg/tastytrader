@@ -70,6 +70,8 @@
     <!-- Main panels area -->
     <div class="panels-area">
 
+      <div class="panels-column">
+
       <!-- Mobile tab strip -->
       <div class="tab-strip" role="tablist" aria-label="Dashboard panels">
         <button class="tab active" role="tab" aria-selected="true"
@@ -209,6 +211,93 @@
           {% endif %}
         </div>
       </section>
+
+      </div><!-- /panels-column -->
+
+      <!-- Detail panel — populated on row click -->
+      <aside class="detail-panel" id="detail-panel" aria-label="Position detail">
+
+        <!-- No-selection empty state (shown when nothing is selected) -->
+        <div class="detail-empty" id="detail-empty">
+          <span class="detail-empty-msg">select a position to view details</span>
+        </div>
+
+        <!-- Detail content (shown when a row is selected) -->
+        <div class="detail-content" id="detail-content" hidden>
+
+          <!-- Header: symbol + type chip -->
+          <div class="detail-header">
+            <span class="detail-symbol" id="detail-symbol"></span>
+            <span class="detail-type-chip" id="detail-type-chip"></span>
+          </div>
+
+          <!-- Option fields (only shown for Equity Option rows) -->
+          <div class="detail-section detail-option-fields" id="detail-option-fields" hidden>
+            <div class="detail-row">
+              <span class="detail-label">underlying</span>
+              <span class="detail-value" id="detail-underlying"></span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">expiry</span>
+              <span class="detail-value" id="detail-expiry"></span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">type</span>
+              <span class="detail-value" id="detail-option-type"></span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">strike</span>
+              <span class="detail-value" id="detail-strike"></span>
+            </div>
+          </div>
+
+          <!-- Live quote fields -->
+          <div class="detail-section">
+            <div class="detail-row">
+              <span class="detail-label">last</span>
+              <span class="detail-value detail-mono" id="detail-last">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">bid</span>
+              <span class="detail-value detail-mono" id="detail-bid">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">ask</span>
+              <span class="detail-value detail-mono" id="detail-ask">—</span>
+            </div>
+          </div>
+
+          <!-- EMA fields -->
+          <div class="detail-section">
+            <div class="detail-row">
+              <span class="detail-label">ema 10</span>
+              <span class="detail-value detail-mono" id="detail-ema-short">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">ema 20</span>
+              <span class="detail-value detail-mono" id="detail-ema-long">—</span>
+            </div>
+          </div>
+
+          <!-- Cost basis + P&L fields -->
+          <div class="detail-section">
+            <div class="detail-row">
+              <span class="detail-label">avg cost</span>
+              <span class="detail-value detail-mono" id="detail-avg-cost">—</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">open p&amp;l</span>
+              <span class="detail-value detail-mono" id="detail-open-pnl">—</span>
+            </div>
+          </div>
+
+          <!-- Chart placeholder (chart implemented in issue #7) -->
+          <div class="detail-chart-placeholder" id="detail-chart-placeholder">
+            <span class="detail-chart-msg">chart · coming in #7</span>
+          </div>
+
+        </div><!-- /detail-content -->
+      </aside><!-- /detail-panel -->
 
     </div><!-- /panels-area -->
   </div><!-- /workspace -->
