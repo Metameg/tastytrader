@@ -412,3 +412,26 @@
 ::-webkit-scrollbar-track         { background: transparent; }
 ::-webkit-scrollbar-thumb         { background: var(--border-strong); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover   { background: var(--text-muted); }
+
+.chip.pl-positive {
+  color: var(--green);
+  background: var(--green-dim);
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-xs);
+}
+
+.chip.pl-negative {
+  color: var(--red);
+  background: var(--red-dim);
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-xs);
+}
+
+.option-leg-row td:first-child {
+  padding-left: var(--sp-6);
+  color: var(--text-dim);
+}
+
+.option-leg-row {
+  font-size: var(--text-xs);
+}

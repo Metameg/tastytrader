@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import re as _re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -100,10 +101,31 @@ async def index(request: Request):
             "account_number": summary["account_number"],
             "net_liquidating_value": summary["net_liquidating_value"],
             "buying_power": summary["buying_power"],
-            "positions": state.positions,
+            "positions": state.get_positions_grouped(),
             "orders": state.orders,
         },
     )
+
+
+@app.delete("/api/orders/{order_id}")
+async def delete_order(order_id: str, request: Request):
+    if not _re.fullmatch(r"[A-Za-z0-9_-]+", order_id):
+        return JSONResponse(status_code=400, content={"error": "invalid order id"})
+    state: DashboardState = request.app.state.dashboard
+    token: str = request.app.state.session_token
+    acct = request.app.state.config.execution.account_number
+    state.orders = [o for o in state.orders if str(o.get("id")) != order_id]
+    try:
+        await cancel_order(token, acct, order_id)
+        return {"status": "ok"}
+    except httpx.HTTPStatusError as e:
+        return JSONResponse(status_code=e.response.status_code, content={"error": e.response.text})
+
+
+@app.get("/api/positions")
+async def get_positions(request: Request):
+    state: DashboardState = request.app.state.dashboard
+    return JSONResponse(content=state.positions)
 
 
 @app.get("/stream/live")
@@ -119,7 +141,8 @@ async def stream_live(request: Request):
                     break
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
+                    event_name = item["event"].replace("\n", "").replace("\r", "")
+                    yield f"event: {event_name}\ndata: {json.dumps(item['data'])}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:
@@ -193,19 +216,6 @@ async def create_order(request: Request):
         except Exception:
             msg = exc.response.text
         return JSONResponse(status_code=400, content={"error": msg})
-
-
-@app.delete("/api/orders/{order_id}")
-async def delete_order(order_id: str, request: Request):
-    token: str = request.app.state.session_token
-    acct: str = request.app.state.config.execution.account_number
-    state: DashboardState = request.app.state.dashboard
-    try:
-        await cancel_order(session_token=token, account_number=acct, order_id=order_id)
-        state.orders = [o for o in state.orders if str(o.get("id")) != order_id]
-        return {"cancelled": order_id}
-    except httpx.HTTPStatusError as exc:
-        return JSONResponse(status_code=exc.response.status_code, content={"error": exc.response.text})
 
 
 if __name__ == "__main__":

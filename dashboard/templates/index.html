@@ -104,15 +104,55 @@
             <tbody>
               {% if positions %}
                 {% for pos in positions %}
-                <tr data-symbol="{{ pos.symbol }}">
+                <tr data-symbol="{{ pos.symbol }}"
+                    data-instrument-type="{{ pos.instrument_type }}"
+                    data-qty="{{ pos.quantity }}"
+                    data-avg-cost="{{ pos.avg_cost }}">
                   <td class="col-left symbol-cell">{{ pos.symbol }}</td>
                   <td class="col-dim">{{ pos.instrument_type }}</td>
                   <td>{{ pos.quantity }}</td>
                   <td>{{ pos.avg_cost }}</td>
-                  <td class="neutral">—</td>
-                  <td class="neutral">—</td>
+                  <td class="mark neutral" data-col="mark">{{ pos.current_price if pos.current_price is not none else "—" }}</td>
+                  <td class="pnl neutral" data-col="pnl">
+                    {% if pos.pl is not none and pos.pl != 0 %}
+                      {% if pos.pl > 0 %}
+                        <span class="chip pl-positive">+{{ "%.2f"|format(pos.pl) }}</span>
+                      {% else %}
+                        <span class="chip pl-negative">{{ "%.2f"|format(pos.pl) }}</span>
+                      {% endif %}
+                    {% else %}
+                      <span class="chip neutral">—</span>
+                    {% endif %}
+                  </td>
                   <td class="neutral">—</td>
                 </tr>
+                {% if pos.legs %}
+                  {% for leg in pos.legs %}
+                  <tr class="option-leg-row"
+                      data-symbol="{{ leg.symbol }}"
+                      data-instrument-type="{{ leg.instrument_type }}"
+                      data-qty="{{ leg.quantity }}"
+                      data-avg-cost="{{ leg.avg_cost }}">
+                    <td class="col-left symbol-cell">{{ leg.symbol }}</td>
+                    <td class="col-dim">{{ leg.instrument_type }}</td>
+                    <td>{{ leg.quantity }}</td>
+                    <td>{{ leg.avg_cost }}</td>
+                    <td class="mark neutral" data-col="mark">{{ leg.current_price if leg.current_price is not none else "—" }}</td>
+                    <td class="pnl neutral" data-col="pnl">
+                      {% if leg.pl is not none and leg.pl != 0 %}
+                        {% if leg.pl > 0 %}
+                          <span class="chip pl-positive">+{{ "%.2f"|format(leg.pl) }}</span>
+                        {% else %}
+                          <span class="chip pl-negative">{{ "%.2f"|format(leg.pl) }}</span>
+                        {% endif %}
+                      {% else %}
+                        <span class="chip neutral">—</span>
+                      {% endif %}
+                    </td>
+                    <td class="neutral">—</td>
+                  </tr>
+                  {% endfor %}
+                {% endif %}
                 {% endfor %}
               {% else %}
                 <tr class="empty-row"><td colspan="7">no positions</td></tr>
@@ -195,5 +235,6 @@
 
   <script src="/static/js/main.js" defer></script>
   <script src="/static/js/order-form.js" defer></script>
+  <script src="/static/js/dashboard.js" defer></script>
 </body>
 </html>
