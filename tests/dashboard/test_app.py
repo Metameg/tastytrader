@@ -3,6 +3,8 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
+
 
 @pytest.fixture(scope="module")
 def client():
@@ -56,6 +58,55 @@ def test_app_has_config_loaded(client):
     from dashboard.app import app
     assert app.state.config is not None
     assert app.state.config.execution.account_number == "5WX78966"
+
+
+# --- _refresh order filtering ---
+
+def test_refresh_filters_cancelled_orders_from_state(client):
+    """Poll must not resurrect cancelled orders; only open statuses stored."""
+    from dashboard.app import app, _refresh
+
+    app.state.session_token = "fake-token"
+    cancelled = {"id": 9, "symbol": "AAPL", "status": "Cancelled", "action": "Buy to Open",
+                 "order_type": "Limit", "quantity": 1, "price": "1.00", "time": "10:00:00"}
+    live = {"id": 10, "symbol": "TSLA", "status": "Live", "action": "Buy to Open",
+            "order_type": "Limit", "quantity": 1, "price": "1.00", "time": "10:00:00"}
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {"account_number": "X", "net_liquidating_value": "0", "buying_power": "0"}
+        mock_pos.return_value = []
+        mock_ord.return_value = [cancelled, live]
+        asyncio.run(_refresh(app))
+
+    ids = [o["id"] for o in app.state.dashboard.orders]
+    assert 9 not in ids
+    assert 10 in ids
+
+
+def test_refresh_filters_filled_and_rejected_orders(client):
+    from dashboard.app import app, _refresh
+
+    app.state.session_token = "fake-token"
+    orders = [
+        {"id": 1, "status": "Filled",   "symbol": "A", "action": "Buy to Open", "order_type": "Limit", "quantity": 1, "price": "1", "time": ""},
+        {"id": 2, "status": "Rejected", "symbol": "B", "action": "Buy to Open", "order_type": "Limit", "quantity": 1, "price": "1", "time": ""},
+        {"id": 3, "status": "Received", "symbol": "C", "action": "Buy to Open", "order_type": "Limit", "quantity": 1, "price": "1", "time": ""},
+    ]
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {"account_number": "X", "net_liquidating_value": "0", "buying_power": "0"}
+        mock_pos.return_value = []
+        mock_ord.return_value = orders
+        asyncio.run(_refresh(app))
+
+    stored_ids = [o["id"] for o in app.state.dashboard.orders]
+    assert 1 not in stored_ids  # Filled
+    assert 2 not in stored_ids  # Rejected
+    assert 3 in stored_ids      # Received — open
 
 
 # --- DELETE /api/orders/{order_id} ---
@@ -134,7 +185,8 @@ def test_cancel_button_absent_for_filled_order(client):
     ]
     response = client.get("/")
     app.state.dashboard.orders = []
-    assert 'data-order-id="444"' not in response.text
+    assert 'data-order-id="444"' in response.text          # row still rendered
+    assert 'class="cancel-btn" data-order-id="444"' not in response.text  # button absent
 
 
 def test_cancel_button_absent_for_cancelled_order(client):
@@ -145,4 +197,234 @@ def test_cancel_button_absent_for_cancelled_order(client):
     ]
     response = client.get("/")
     app.state.dashboard.orders = []
-    assert 'data-order-id="555"' not in response.text
+    assert 'data-order-id="555"' in response.text          # row still rendered
+    assert 'class="cancel-btn" data-order-id="555"' not in response.text  # button absent
+
+
+# --- POST /api/orders ---
+
+def test_post_api_orders_returns_200_and_order_id(client):
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.return_value = "ORD-42"
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 2,
+                "limit_price": 155.50,
+            },
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["order_id"] == "ORD-42"
+
+
+def test_post_api_orders_returns_error_when_api_rejects(client):
+    mock_api_response = MagicMock()
+    mock_api_response.status_code = 422
+    mock_api_response.text = "Order rejected by exchange"
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.side_effect = httpx.HTTPStatusError(
+            "422",
+            request=MagicMock(),
+            response=mock_api_response,
+        )
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 1,
+                "limit_price": 150.0,
+            },
+        )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_response_contains_order_id_key(client):
+    """Success response must include the documented 'order_id' key."""
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.return_value = "ORD-77"
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "TSLA",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 10,
+                "limit_price": 200.0,
+            },
+        )
+    assert response.status_code == 200
+    data = response.json()
+    assert "order_id" in data
+    assert data["order_id"] == "ORD-77"
+
+
+def test_post_api_orders_coerces_string_quantity_to_int(client):
+    """Form sends fields as strings; route must cast quantity to int for place_order."""
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.return_value = "ORD-88"
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": "3",
+                "limit_price": "155.00",
+            },
+        )
+    assert response.status_code == 200
+    _, kwargs = mock_place.call_args
+    assert kwargs["quantity"] == 3
+    assert isinstance(kwargs["quantity"], int)
+
+
+def test_post_api_orders_returns_400_when_body_missing_required_field(client):
+    """Missing fields must not crash the server (no 500). Must return a 4xx with error."""
+    response = client.post(
+        "/api/orders",
+        json={"symbol": "AAPL"},
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_returns_400_on_empty_body(client):
+    """An empty body must not crash the server. Must return a 4xx with error."""
+    response = client.post(
+        "/api/orders",
+        json={},
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+# --- Input validation allow-list tests ---
+
+def test_post_api_orders_rejects_invalid_action(client):
+    """action not in allow-list must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "action": "Buy to Close",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_invalid_instrument_type(client):
+    """instrument_type not in allow-list must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Future",
+            "action": "Buy to Open",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_zero_quantity(client):
+    """quantity of 0 must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": 0,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_negative_quantity(client):
+    """negative quantity must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": -5,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_missing_symbol(client):
+    """A body missing 'symbol' must return 400 (not 500)."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_rejects_blank_symbol(client):
+    """A blank/whitespace 'symbol' must return 400."""
+    response = client.post(
+        "/api/orders",
+        json={
+            "symbol": "   ",
+            "instrument_type": "Equity",
+            "action": "Buy to Open",
+            "quantity": 1,
+            "limit_price": 150.0,
+        },
+    )
+    assert response.status_code == 400
+    data = response.json()
+    assert "error" in data
+
+
+def test_post_api_orders_returns_502_on_network_error(client):
+    """httpx.RequestError from place_order must return 502 (not 500)."""
+    with patch("dashboard.app.place_order", new_callable=AsyncMock) as mock_place:
+        mock_place.side_effect = httpx.RequestError("connection refused")
+        response = client.post(
+            "/api/orders",
+            json={
+                "symbol": "AAPL",
+                "instrument_type": "Equity",
+                "action": "Buy to Open",
+                "quantity": 1,
+                "limit_price": 150.0,
+            },
+        )
+    assert response.status_code == 502
+    data = response.json()
+    assert "error" in data

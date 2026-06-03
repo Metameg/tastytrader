@@ -19,7 +19,7 @@ async def fetch_balance(
         return {
             "account_number": data["account-number"],
             "net_liquidating_value": data["net-liquidating-value"],
-            "buying_power": data["buying-power"],
+            "buying_power": data.get("derivative-buying-power", data.get("equity-buying-power", "—")),
         }
 
 
@@ -46,6 +46,23 @@ async def fetch_positions(
         ]
 
 
+async def fetch_quote_token(
+    session_token: str,
+    base_url: str = BASE_URL,
+) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"{base_url}/api-quote-tokens",
+            headers={"Authorization": session_token},
+        )
+        resp.raise_for_status()
+        data = resp.json()["data"]
+        return {
+            "token": data["token"],
+            "dxlink_url": data["dxlink-url"],
+        }
+
+
 async def fetch_orders(
     session_token: str,
     account_number: str,
@@ -65,6 +82,7 @@ async def fetch_orders(
             received = item.get("received-at", "")
             time_str = received[11:19] if len(received) >= 19 else received
             result.append({
+                "id": item.get("id"),
                 "symbol": item.get("underlying-symbol", leg.get("symbol", "—")),
                 "action": leg.get("action", "—"),
                 "order_type": item.get("order-type", "—"),
@@ -74,3 +92,52 @@ async def fetch_orders(
                 "time": time_str,
             })
         return result
+
+
+async def place_order(
+    session_token: str,
+    account_number: str,
+    symbol: str,
+    instrument_type: str,
+    action: str,
+    quantity: int,
+    limit_price: float,
+    base_url: str = BASE_URL,
+) -> str:
+    price_effect = "Debit" if action == "Buy to Open" else "Credit"
+    body = {
+        "order-type": "Limit",
+        "time-in-force": "Day",
+        "price": f"{limit_price:.2f}",
+        "price-effect": price_effect,
+        "legs": [
+            {
+                "instrument-type": instrument_type,
+                "symbol": symbol,
+                "quantity": quantity,
+                "action": action,
+            }
+        ],
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{base_url}/accounts/{account_number}/orders",
+            json=body,
+            headers={"Authorization": session_token},
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]["order"]["id"]
+
+
+async def cancel_order(
+    session_token: str,
+    account_number: str,
+    order_id: str,
+    base_url: str = BASE_URL,
+) -> None:
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"{base_url}/accounts/{account_number}/orders/{order_id}",
+            headers={"Authorization": session_token},
+        )
+        resp.raise_for_status()

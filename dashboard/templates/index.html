@@ -4,113 +4,196 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>tastytrader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/tokens.css">
   <link rel="stylesheet" href="/static/css/layout.css">
   <link rel="stylesheet" href="/static/css/components.css">
 </head>
 <body>
-  <header class="status-header">
-    <span class="header-brand">tastytrader</span>
-    <span class="header-account">{{ account_number }}</span>
-    <span class="header-nlv">NLV <span class="value">{{ net_liquidating_value }}</span></span>
-    <span class="header-pl neutral">Day P&amp;L <span class="value">—</span></span>
-    <span class="header-bp">BP <span class="value">{{ buying_power }}</span></span>
-    <span class="status-dot disconnected" title="disconnected"></span>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <span class="brand">tastytrader</span>
+      <span class="status-dot disconnected" id="status-dot" title="connecting"></span>
+    </div>
+
+    <div class="topbar-stats" id="topbar-stats">
+      <div class="stat-group">
+        <span class="stat-label">account</span>
+        <span class="stat-value header-account">{{ account_number }}</span>
+      </div>
+      <div class="stat-group">
+        <span class="stat-label">nlv</span>
+        <span class="stat-value header-nlv">{{ net_liquidating_value }}</span>
+      </div>
+      <div class="stat-group">
+        <span class="stat-label">buying power</span>
+        <span class="stat-value header-bp">{{ buying_power }}</span>
+      </div>
+      <div class="stat-group hide-xs">
+        <span class="stat-label">day p&amp;l</span>
+        <span class="stat-value neutral">—</span>
+      </div>
+    </div>
+
+    <button class="nav-toggle" id="nav-toggle" aria-label="Toggle holdings" aria-expanded="false" aria-controls="holdings-nav">
+      ☰
+    </button>
   </header>
 
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="sidebar-section-label">holdings</div>
+  <!-- Backdrop for mobile drawer -->
+  <div class="nav-backdrop" id="nav-backdrop"></div>
+
+  <!-- Workspace -->
+  <div class="workspace">
+
+    <!-- Holdings sidebar / mobile drawer -->
+    <nav class="holdings-nav" id="holdings-nav" aria-label="Holdings">
+      <div class="nav-section-label">holdings</div>
       <ul class="holdings-list" id="holdings-list">
         {% if positions %}
           {% for pos in positions %}
-          <li class="holding-row">{{ pos.symbol }}</li>
+          <li class="holding-item">
+            <span class="holding-symbol">{{ pos.symbol }}</span>
+            <span class="holding-qty">{{ pos.quantity }}</span>
+          </li>
           {% endfor %}
         {% else %}
-          <li class="holding-row placeholder">—</li>
+          <li class="holding-item placeholder">no holdings</li>
         {% endif %}
       </ul>
-    </aside>
+    </nav>
 
-    <main class="main-content">
-      <div class="section-header">
-        <span class="section-title">positions</span>
+    <!-- Main panels area -->
+    <div class="panels-area">
+
+      <!-- Mobile tab strip -->
+      <div class="tab-strip" role="tablist" aria-label="Dashboard panels">
+        <button class="tab active" role="tab" aria-selected="true"
+                aria-controls="panel-positions" data-panel="positions">
+          positions
+        </button>
+        <button class="tab" role="tab" aria-selected="false"
+                aria-controls="panel-orders" data-panel="orders">
+          orders
+          {% if orders %}<span class="tab-badge">{{ orders|length }}</span>{% endif %}
+        </button>
       </div>
-      <table class="positions-table" id="positions-table">
-        <thead>
-          <tr>
-            <th>symbol</th>
-            <th>type</th>
-            <th>qty</th>
-            <th>avg cost</th>
-            <th>mark</th>
-            <th>day p&amp;l</th>
-            <th>total p&amp;l</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% if positions %}
-            {% for pos in positions %}
-            <tr>
-              <td>{{ pos.symbol }}</td>
-              <td>{{ pos.instrument_type }}</td>
-              <td>{{ pos.quantity }}</td>
-              <td>{{ pos.avg_cost }}</td>
-              <td class="neutral">—</td>
-              <td class="neutral">—</td>
-              <td class="neutral">—</td>
-            </tr>
-            {% endfor %}
+
+      <!-- Positions panel -->
+      <section class="panel active" id="panel-positions" role="tabpanel">
+        <div class="panel-header">
+          <span class="panel-title">positions</span>
+        </div>
+        <div class="panel-scroll">
+          <table class="data-table" id="positions-table">
+            <thead>
+              <tr>
+                <th class="col-left">symbol</th>
+                <th class="col-dim col-left">type</th>
+                <th>qty</th>
+                <th>avg cost</th>
+                <th>mark</th>
+                <th>day p&amp;l</th>
+                <th>total p&amp;l</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if positions %}
+                {% for pos in positions %}
+                <tr data-symbol="{{ pos.symbol }}">
+                  <td class="col-left symbol-cell">{{ pos.symbol }}</td>
+                  <td class="col-dim">{{ pos.instrument_type }}</td>
+                  <td>{{ pos.quantity }}</td>
+                  <td>{{ pos.avg_cost }}</td>
+                  <td class="neutral">—</td>
+                  <td class="neutral">—</td>
+                  <td class="neutral">—</td>
+                </tr>
+                {% endfor %}
+              {% else %}
+                <tr class="empty-row"><td colspan="7">no positions</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Orders panel -->
+      <section class="panel" id="panel-orders" role="tabpanel" aria-hidden="true">
+        <div class="panel-header">
+          <span class="panel-title">open orders</span>
+          <span class="panel-count" id="orders-count">{{ orders|length }}</span>
+        </div>
+        <div class="panel-scroll" id="orders-list">
+          {% if orders %}
+          <table class="data-table orders-table">
+            <thead>
+              <tr>
+                <th class="col-left">symbol</th>
+                <th class="col-left">action</th>
+                <th class="col-left">type</th>
+                <th>qty</th>
+                <th>price</th>
+                <th class="col-left">status</th>
+                <th class="col-left">time</th>
+                <th class="col-end"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for order in orders %}
+              <tr data-order-id="{{ order.id }}">
+                <td class="col-left symbol-cell">{{ order.symbol }}</td>
+                <td class="col-dim">{{ order.action }}</td>
+                <td class="col-dim">{{ order.order_type }}</td>
+                <td>{{ order.quantity }}</td>
+                <td>{{ order.price }}</td>
+                <td class="col-left">
+                  <span class="status-chip status-{{ order.status | lower }}">{{ order.status }}</span>
+                </td>
+                <td class="col-dim">{{ order.time }}</td>
+                <td class="col-end">
+                  {% if order.status in ('Received', 'Routed', 'Live') %}
+                  <button class="cancel-btn" data-order-id="{{ order.id }}" aria-label="Cancel order {{ order.id }}">✕</button>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
           {% else %}
-            <tr class="placeholder-row">
-              <td colspan="7">no positions</td>
-            </tr>
+          <div class="empty-state">no open orders</div>
           {% endif %}
-        </tbody>
-      </table>
-    </main>
+        </div>
+      </section>
 
-    <aside class="detail-panel" id="detail-panel">
-      <div class="detail-placeholder">select a holding</div>
-    </aside>
-  </div>
+    </div><!-- /panels-area -->
+  </div><!-- /workspace -->
 
-  <footer class="orders-bar">
-    <div class="orders-bar-label">open orders</div>
-    <div class="orders-list" id="orders-list">
-      {% if orders %}
-      <table class="orders-table">
-        <thead>
-          <tr>
-            <th>symbol</th>
-            <th>action</th>
-            <th>type</th>
-            <th>qty</th>
-            <th>price</th>
-            <th>status</th>
-            <th>time</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for order in orders %}
-          <tr>
-            <td>{{ order.symbol }}</td>
-            <td>{{ order.action }}</td>
-            <td>{{ order.order_type }}</td>
-            <td>{{ order.quantity }}</td>
-            <td>{{ order.price }}</td>
-            <td>{{ order.status }}</td>
-            <td>{{ order.time }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <div class="orders-empty">no open orders</div>
-      {% endif %}
-    </div>
+  <!-- Order entry bar -->
+  <footer class="entry-bar">
+    <form id="order-form" class="order-form" autocomplete="off" novalidate>
+      <input id="of-symbol" type="text" placeholder="symbol" required
+             autocapitalize="characters" autocorrect="off" spellcheck="false">
+      <select id="of-instrument-type">
+        <option value="Equity">equity</option>
+        <option value="Equity Option">option</option>
+      </select>
+      <select id="of-action">
+        <option value="Buy to Open">buy</option>
+        <option value="Sell to Close">sell</option>
+      </select>
+      <input id="of-quantity" type="number" placeholder="qty" min="1" required inputmode="numeric">
+      <input id="of-limit-price" type="number" placeholder="limit" step="0.01" min="0.01" required inputmode="decimal">
+      <button type="submit" class="btn-primary">place order</button>
+      <span id="order-feedback" class="order-feedback" role="status" aria-live="polite"></span>
+    </form>
   </footer>
 
   <script src="/static/js/main.js" defer></script>
+  <script src="/static/js/order-form.js" defer></script>
 </body>
 </html>

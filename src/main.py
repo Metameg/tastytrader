@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import signal
 
-from src.auth import login
+from src.auth import login, fetch_quote_token
 from src.config import load_config
 from src.executor import Executor
 from src.strategy import Strategy
@@ -14,6 +14,7 @@ async def main() -> None:
 
     print("Logging in to sandbox...")
     auth = await login(config.username, config.password)
+    qt = await fetch_quote_token(auth.session_token)
     print("Authenticated.")
 
     price_queue: asyncio.Queue = asyncio.Queue()
@@ -21,7 +22,8 @@ async def main() -> None:
 
     streamer = Streamer(
         symbol=config.market.symbol,
-        auth=auth,
+        quote_token=qt["token"],
+        streamer_url=qt["dxlink_url"],
         price_queue=price_queue,
     )
     strategy = Strategy(

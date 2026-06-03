@@ -5,10 +5,7 @@ import time
 
 import websockets
 
-from src.auth import Auth
 from src.models import PriceEvent
-
-STREAMER_URL = "wss://streamer.cert.tastyworks.com"
 
 # DXLink protocol constants
 _SETUP = {
@@ -36,14 +33,15 @@ _FEED_SETUP = {
 
 
 class Streamer:
-    def __init__(self, symbol: str, auth: Auth, price_queue: asyncio.Queue) -> None:
+    def __init__(self, symbol: str, quote_token: str, streamer_url: str, price_queue: asyncio.Queue) -> None:
         self._symbol = symbol
-        self._auth = auth
+        self._quote_token = quote_token
+        self._streamer_url = streamer_url
         self._price_queue = price_queue
         self._backoff = 5.0
 
     async def _connect_and_stream(self) -> None:
-        async with websockets.connect(STREAMER_URL) as ws:
+        async with websockets.connect(self._streamer_url) as ws:
             self._backoff = 5.0  # reset on successful connect
 
             # DXLink handshake
@@ -51,7 +49,7 @@ class Streamer:
             await self._wait_for(ws, "SETUP")
 
             await ws.send(
-                json.dumps({"type": "AUTH", "channel": 0, "token": self._auth.session_token})
+                json.dumps({"type": "AUTH", "channel": 0, "token": self._quote_token})
             )
             await self._wait_for(ws, "AUTH_STATE")
 
