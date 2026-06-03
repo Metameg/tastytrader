@@ -664,3 +664,339 @@ async def test_place_order_raises_on_non_2xx_response():
                 quantity=1,
                 limit_price=150.0,
             )
+
+
+# --- Issue #5: DashboardState SSE subscriber management ---
+
+async def test_add_subscriber_returns_asyncio_queue():
+    state = DashboardState()
+    queue = await state.add_subscriber()
+    assert isinstance(queue, asyncio.Queue)
+
+
+async def test_broadcast_puts_event_into_subscriber_queue():
+    state = DashboardState()
+    queue = await state.add_subscriber()
+    await state.broadcast("quote", {"symbol": "AAPL", "price": 150.0})
+    item = queue.get_nowait()
+    assert item["event"] == "quote"
+    assert item["data"]["symbol"] == "AAPL"
+
+
+async def test_remove_subscriber_stops_receiving_broadcasts():
+    state = DashboardState()
+    queue = await state.add_subscriber()
+    await state.remove_subscriber(queue)
+    await state.broadcast("quote", {"symbol": "AAPL", "price": 150.0})
+    assert queue.empty()
+
+
+# --- Issue #5: DashboardState.get_positions_grouped ---
+
+def test_get_positions_grouped_nests_option_under_equity():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 100,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+        {
+            "symbol": "AAPL  240119C00150000",
+            "instrument_type": "Equity Option",
+            "quantity": 1,
+            "avg_cost": "3.50",
+            "current_price": None,
+        },
+    ]
+    grouped = state.get_positions_grouped()
+    # Result has one top-level entry for AAPL (the equity)
+    equity_rows = [r for r in grouped if r["instrument_type"] == "Equity"]
+    assert len(equity_rows) == 1
+    # That equity row has nested option legs
+    equity_row = equity_rows[0]
+    assert "legs" in equity_row
+    assert len(equity_row["legs"]) == 1
+    assert equity_row["legs"][0]["instrument_type"] == "Equity Option"
+
+
+def test_get_positions_grouped_option_at_top_level_when_no_equity():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "SPY   240119C00450000",
+            "instrument_type": "Equity Option",
+            "quantity": 2,
+            "avg_cost": "5.00",
+            "current_price": None,
+        },
+    ]
+    grouped = state.get_positions_grouped()
+    # Option appears at top level since no SPY equity row exists
+    assert len(grouped) == 1
+    assert grouped[0]["instrument_type"] == "Equity Option"
+
+
+def test_get_positions_grouped_multiple_options_under_same_equity():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "TSLA",
+            "instrument_type": "Equity",
+            "quantity": 50,
+            "avg_cost": "200.00",
+            "current_price": None,
+        },
+        {
+            "symbol": "TSLA  240119C00200000",
+            "instrument_type": "Equity Option",
+            "quantity": 1,
+            "avg_cost": "10.00",
+            "current_price": None,
+        },
+        {
+            "symbol": "TSLA  240119P00200000",
+            "instrument_type": "Equity Option",
+            "quantity": 1,
+            "avg_cost": "8.00",
+            "current_price": None,
+        },
+    ]
+    grouped = state.get_positions_grouped()
+    equity_row = next(r for r in grouped if r["instrument_type"] == "Equity")
+    assert len(equity_row["legs"]) == 2
+
+
+# --- Issue #5: DashboardState.update_quote ---
+
+def test_update_quote_stores_current_price_for_symbol():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("AAPL", 155.0)
+    assert state.positions[0]["current_price"] == 155.0
+
+
+def test_update_quote_calculates_pl_for_equity():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("AAPL", 155.0)
+    # P&L = (155.0 - 150.0) * 10 * 1 = 50.0
+    assert state.positions[0]["pl"] == pytest.approx(50.0)
+
+
+def test_update_quote_calculates_pl_for_option_with_100_multiplier():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL  240119C00150000",
+            "instrument_type": "Equity Option",
+            "quantity": 2,
+            "avg_cost": "3.50",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("AAPL  240119C00150000", 5.00)
+    # P&L = (5.00 - 3.50) * 2 * 100 = 300.0
+    assert state.positions[0]["pl"] == pytest.approx(300.0)
+
+
+def test_update_quote_negative_pl_for_losing_position():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("AAPL", 145.0)
+    # P&L = (145.0 - 150.0) * 10 = -50.0
+    assert state.positions[0]["pl"] == pytest.approx(-50.0)
+
+
+# --- Issue #5: DashboardState.get_positions_grouped edge cases ---
+
+def test_get_positions_grouped_empty_positions():
+    state = DashboardState()
+    state.positions = []
+    assert state.get_positions_grouped() == []
+
+
+def test_get_positions_grouped_equity_with_no_options_has_empty_legs():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "MSFT",
+            "instrument_type": "Equity",
+            "quantity": 5,
+            "avg_cost": "300.00",
+            "current_price": None,
+        },
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+    ]
+    grouped = state.get_positions_grouped()
+    assert len(grouped) == 2
+    for row in grouped:
+        assert row["legs"] == []
+
+
+def test_get_positions_grouped_option_symbol_starting_with_non_alpha_is_orphan():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+        {
+            "symbol": "1AAPL 240119C00150000",
+            "instrument_type": "Equity Option",
+            "quantity": 1,
+            "avg_cost": "3.50",
+            "current_price": None,
+        },
+    ]
+    grouped = state.get_positions_grouped()
+    equity_rows = [r for r in grouped if r["instrument_type"] == "Equity"]
+    orphan_rows = [r for r in grouped if r["instrument_type"] == "Equity Option"]
+    assert equity_rows[0]["legs"] == []
+    assert len(orphan_rows) == 1
+
+
+# --- Issue #5: DashboardState.update_quote edge cases ---
+
+def test_update_quote_unknown_symbol_no_error():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("MSFT", 300.0)
+    assert state.positions[0]["current_price"] is None
+
+
+def test_update_quote_updates_all_positions_for_same_symbol():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 5,
+            "avg_cost": "160.00",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("AAPL", 155.0)
+    assert state.positions[0]["current_price"] == 155.0
+    assert state.positions[1]["current_price"] == 155.0
+    assert state.positions[0]["pl"] == pytest.approx(50.0)
+    assert state.positions[1]["pl"] == pytest.approx(-25.0)
+
+
+def test_update_quote_avg_cost_as_string_converts_correctly():
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+        },
+    ]
+    state.update_quote("AAPL", 160.0)
+    assert state.positions[0]["pl"] == pytest.approx(100.0)
+
+
+# --- Issue #5: DashboardState.broadcast edge cases ---
+
+async def test_broadcast_with_zero_subscribers_no_error():
+    state = DashboardState()
+    await state.broadcast("quote", {"symbol": "AAPL", "price": 150.0})
+
+
+async def test_broadcast_multiple_events_all_received_by_subscriber():
+    state = DashboardState()
+    queue = await state.add_subscriber()
+    await state.broadcast("quote", {"symbol": "AAPL", "price": 150.0})
+    await state.broadcast("quote", {"symbol": "MSFT", "price": 300.0})
+    first = queue.get_nowait()
+    second = queue.get_nowait()
+    assert first["data"]["symbol"] == "AAPL"
+    assert second["data"]["symbol"] == "MSFT"
+
+
+async def test_broadcast_multiple_events_reach_all_subscribers():
+    state = DashboardState()
+    q1 = await state.add_subscriber()
+    q2 = await state.add_subscriber()
+    await state.broadcast("quote", {"symbol": "AAPL", "price": 150.0})
+    assert not q1.empty()
+    assert not q2.empty()
+
+
+# --- Issue #5: fetch_positions includes current_price field ---
+
+async def test_fetch_positions_includes_current_price_field():
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": "AAPL",
+                    "instrument-type": "Equity",
+                    "quantity": "10",
+                    "average-open-price": "150.00",
+                }
+            ]
+        }
+    }
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        positions = await fetch_positions(session_token="tok", account_number="5WX78966")
+
+    assert "current_price" in positions[0]

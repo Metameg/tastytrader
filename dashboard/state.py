@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import re
 from dataclasses import dataclass, field
 
 from src.models import PriceEvent
@@ -73,3 +74,44 @@ class DashboardState:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass
+
+    def get_positions_grouped(self) -> list[dict]:
+        equity_symbols: set[str] = {
+            pos["symbol"]
+            for pos in self.positions
+            if pos.get("instrument_type") != "Equity Option"
+        }
+
+        options_by_parent: dict[str, list[dict]] = {}
+        orphan_options: list[dict] = []
+
+        for pos in self.positions:
+            if pos.get("instrument_type") == "Equity Option":
+                parent = re.match(r"([A-Z]+)", pos["symbol"].strip())
+                parent_sym = parent.group(1) if parent else None
+                if parent_sym and parent_sym in equity_symbols:
+                    options_by_parent.setdefault(parent_sym, []).append(pos)
+                else:
+                    orphan_options.append(pos)
+
+        result: list[dict] = []
+        for pos in self.positions:
+            if pos.get("instrument_type") == "Equity Option":
+                continue
+            row = dict(pos)
+            row["legs"] = options_by_parent.get(pos["symbol"], [])
+            result.append(row)
+
+        result.extend(orphan_options)
+        return result
+
+    def update_quote(self, symbol: str, price: float) -> None:
+        for pos in self.positions:
+            if pos["symbol"] == symbol:
+                pos["current_price"] = price
+                try:
+                    avg_cost = float(pos["avg_cost"])
+                except (ValueError, TypeError):
+                    continue
+                multiplier = 100 if pos.get("instrument_type") == "Equity Option" else 1
+                pos["pl"] = (price - avg_cost) * pos["quantity"] * multiplier
