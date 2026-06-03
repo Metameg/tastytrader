@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from src.models import PriceEvent
 from src.strategy import EMACalculator
@@ -126,8 +127,6 @@ def parse_occ(symbol: str) -> dict | None:
 
     Returns None if the symbol does not match the OCC format.
     """
-    from datetime import datetime
-
     m = re.fullmatch(r"([A-Z ]{6})(\d{6})([CP])(\d{8})", symbol)
     if not m:
         return None

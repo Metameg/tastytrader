@@ -442,7 +442,7 @@
   width: 280px;
   background: var(--bg-overlay);
   border-left: 1px solid var(--border);
-  display: flex;
+  /* display controlled by layout.css: none on mobile, flex at >=1024px */
   flex-direction: column;
   overflow: hidden;
 }
