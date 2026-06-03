@@ -435,3 +435,134 @@
 .option-leg-row {
   font-size: var(--text-xs);
 }
+
+/* ── DETAIL PANEL ────────────────────────────────── */
+.detail-panel {
+  flex-shrink: 0;
+  width: 280px;
+  background: var(--bg-overlay);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Empty state — nothing selected */
+.detail-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+}
+
+.detail-empty-msg {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* Content area — shown when a row is selected */
+.detail-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Symbol header */
+.detail-header {
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+}
+
+.detail-symbol {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-ui);
+  letter-spacing: -0.01em;
+}
+
+.detail-type-chip {
+  font-size: var(--text-2xs);
+  font-family: var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+  border: 1px solid var(--border-mid);
+  border-radius: var(--r-xs);
+  padding: 0 4px;
+  line-height: 16px;
+}
+
+/* Grouped sections of rows */
+.detail-section {
+  border-bottom: 1px solid var(--border);
+  padding: var(--sp-2) 0;
+}
+
+/* Individual label/value row */
+.detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px var(--sp-3);
+  height: 22px;
+}
+
+.detail-label {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.detail-value {
+  font-size: var(--text-sm);
+  color: var(--text-dim);
+}
+
+.detail-mono {
+  font-family: var(--font-mono);
+}
+
+/* P&L coloring in detail panel */
+.detail-pnl-positive { color: var(--green) !important; }
+.detail-pnl-negative { color: var(--red) !important; }
+
+/* Chart placeholder */
+.detail-chart-placeholder {
+  flex: 1;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px dashed var(--border-mid);
+  margin-top: var(--sp-2);
+}
+
+.detail-chart-msg {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+}
+
+/* Selected row highlight in positions table */
+#positions-table tr[data-selected] {
+  background: var(--bg-hover);
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+#positions-table tbody tr {
+  cursor: pointer;
+}
