@@ -40,7 +40,7 @@ async def _refresh(app: FastAPI) -> None:
         all_orders = await fetch_orders(token, acct)
         state.orders = [o for o in all_orders if o.get("status") in _OPEN_ORDER_STATUSES]
         await state.broadcast("account", state.get_account_summary())
-        await state.broadcast("positions", {"positions": state.positions})
+        await state.broadcast("positions", state.positions)
         await state.broadcast("orders", {"orders": state.orders})
         if hasattr(app.state, "streamer"):
             for pos in state.positions:

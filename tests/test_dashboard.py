@@ -975,6 +975,29 @@ async def test_broadcast_multiple_events_reach_all_subscribers():
     assert not q2.empty()
 
 
+# --- Issue #6: contract — positions SSE event data shape ---
+
+async def test_positions_sse_event_data_is_a_list():
+    """The JS handlePositions() calls .filter() directly on the argument, so the
+    'positions' SSE event data must be a plain list, not a wrapped dict like
+    {"positions": [...]}.  _refresh must broadcast the list directly."""
+    from unittest.mock import AsyncMock, patch
+
+    state = DashboardState()
+    queue = await state.add_subscriber()
+
+    # Simulate what _refresh does after the fix: broadcast("positions", state.positions)
+    await state.broadcast("positions", [{"symbol": "AAPL"}])
+
+    item = queue.get_nowait()
+    assert item["event"] == "positions"
+    # data must be the list itself, not a dict wrapping it
+    assert isinstance(item["data"], list), (
+        f"positions SSE event data must be a list for handlePositions() to call "
+        f".filter() on it; got {type(item['data'])!r} — fix _refresh broadcast in app.py"
+    )
+
+
 # --- Issue #5: fetch_positions includes current_price field ---
 
 async def test_fetch_positions_includes_current_price_field():

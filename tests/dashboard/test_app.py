@@ -607,3 +607,96 @@ def test_api_positions_returns_empty_list_when_no_positions(client):
     app.state.dashboard.positions = []
     response = client.get("/api/positions")
     assert response.json() == []
+
+
+# --- Issue #6: GET /api/quotes/{symbol} ---
+
+def test_get_quote_returns_required_fields_when_quote_exists(client):
+    """Route must return a dict with symbol, last, bid, ask, ema_short, ema_long."""
+    from dashboard.app import app
+    app.state.dashboard.quotes["AAPL"] = {
+        "symbol": "AAPL",
+        "last": 182.35,
+        "bid": 182.30,
+        "ask": 182.40,
+        "ema_short": 181.20,
+        "ema_long": 179.50,
+    }
+    response = client.get("/api/quotes/AAPL")
+    app.state.dashboard.quotes.pop("AAPL", None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["symbol"] == "AAPL"
+    assert data["last"] == 182.35
+    assert data["bid"] == 182.30
+    assert data["ask"] == 182.40
+    assert data["ema_short"] == 181.20
+    assert data["ema_long"] == 179.50
+
+
+def test_get_quote_returns_empty_dict_when_symbol_not_found(client):
+    """Unknown symbol must return an empty JSON object (not 404 or error)."""
+    response = client.get("/api/quotes/UNKNOWN_SYM_XYZ")
+    assert response.status_code == 200
+    assert response.json() == {}
+
+
+def test_get_quote_response_contains_all_six_required_keys(client):
+    """When a quote is present, all six documented keys must be in the response."""
+    from dashboard.app import app
+    app.state.dashboard.quotes["TSLA"] = {
+        "symbol": "TSLA",
+        "last": 250.0,
+        "bid": 249.9,
+        "ask": 250.1,
+        "ema_short": None,
+        "ema_long": None,
+    }
+    response = client.get("/api/quotes/TSLA")
+    app.state.dashboard.quotes.pop("TSLA", None)
+
+    data = response.json()
+    for key in ("symbol", "last", "bid", "ask", "ema_short", "ema_long"):
+        assert key in data, f"Missing key: {key}"
+
+
+# --- Issue #6: _refresh positions SSE broadcast shape ---
+
+def test_refresh_broadcasts_positions_as_list(client):
+    """_refresh must broadcast the positions list directly (not wrapped in a dict)
+    because JS handlePositions() calls .filter() on the received value.
+    A wrapped {'positions': [...]} would cause a TypeError in the browser."""
+    from dashboard.app import app, _refresh
+    from unittest.mock import AsyncMock, patch
+    import asyncio
+
+    app.state.session_token = "fake-token"
+    captured = []
+
+    async def spy_broadcast(event_name, data):
+        captured.append((event_name, data))
+
+    app.state.dashboard.broadcast = spy_broadcast
+
+    pos = [{"symbol": "AAPL", "instrument_type": "Equity", "quantity": 10,
+            "avg_cost": "150.00", "current_price": None, "pl": None}]
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {"account_number": "X", "net_liquidating_value": "0", "buying_power": "0"}
+        mock_pos.return_value = pos
+        mock_ord.return_value = []
+        asyncio.run(_refresh(app))
+
+    # Restore broadcast
+    del app.state.dashboard.broadcast
+
+    positions_events = [(name, data) for name, data in captured if name == "positions"]
+    assert len(positions_events) == 1, "Expected exactly one 'positions' broadcast"
+    _, broadcast_data = positions_events[0]
+    assert isinstance(broadcast_data, list), (
+        f"positions SSE event data must be a plain list so handlePositions() can call "
+        f".filter() on it; got {type(broadcast_data)!r}"
+    )
