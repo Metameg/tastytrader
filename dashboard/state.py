@@ -115,3 +115,35 @@ class DashboardState:
                     continue
                 multiplier = 100 if pos.get("instrument_type") == "Equity Option" else 1
                 pos["pl"] = (price - avg_cost) * pos["quantity"] * multiplier
+
+
+def parse_occ(symbol: str) -> dict | None:
+    """Parse an OCC option symbol into its components.
+
+    OCC format: 6-char underlying (right-padded) + YYMMDD + C/P + 8-digit strike*1000
+    Example: 'AAPL  240119C00150000' → underlying=AAPL, expiry=Jan 19 2024,
+             option_type=Call, strike=150.0
+
+    Returns None if the symbol does not match the OCC format.
+    """
+    from datetime import datetime
+
+    m = re.fullmatch(r"([A-Z ]{6})(\d{6})([CP])(\d{8})", symbol)
+    if not m:
+        return None
+    underlying = m.group(1).strip()
+    date_str = m.group(2)
+    opt_char = m.group(3)
+    strike_raw = m.group(4)
+
+    try:
+        expiry_dt = datetime.strptime(date_str, "%y%m%d")
+    except ValueError:
+        return None
+
+    return {
+        "underlying": underlying,
+        "expiry": expiry_dt.strftime("%b %-d %Y"),
+        "option_type": "Call" if opt_char == "C" else "Put",
+        "strike": int(strike_raw) / 1000,
+    }
