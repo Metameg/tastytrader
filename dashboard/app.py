@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re as _re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -178,6 +179,19 @@ async def stream_live(request: Request):
 async def get_quote(symbol: str, request: Request):
     state: DashboardState = request.app.state.dashboard
     return state.quotes.get(symbol, {})
+
+
+@app.get("/api/chart/{symbol}")
+async def get_chart(symbol: str, request: Request):
+    state: DashboardState = request.app.state.dashboard
+    # Trigger daily candle subscription if streamer is available.
+    # "Subscribe on selection" pattern: first chart fetch for a symbol
+    # triggers the candle feed subscription. Idempotent — streamer
+    # handles duplicate subscriptions gracefully.
+    if hasattr(request.app.state, "streamer"):
+        from_time = int(time.time() - 60 * 86400)
+        request.app.state.streamer.add_candle(symbol, from_time)
+    return state.get_chart_data(symbol)
 
 
 @app.post("/api/orders")
