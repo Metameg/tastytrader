@@ -21,6 +21,7 @@ class DashboardState:
     def __post_init__(self) -> None:
         self._ema_short: dict = {}
         self._ema_long: dict = {}
+        self.candles: dict[str, list[dict]] = {}
 
     def get_account_summary(self) -> dict:
         return {
@@ -75,12 +76,43 @@ class DashboardState:
                 print(f"[SSE] queue full — dropping quote for {s}")
 
     def on_candle(self, ohlc: dict) -> None:
+        # Normalize eventSymbol: strip {=d} suffix to get plain symbol
+        raw_sym: str = ohlc.get("eventSymbol", "")
+        plain_sym = raw_sym.split("{")[0] if "{" in raw_sym else raw_sym
+        if plain_sym:
+            self.candles.setdefault(plain_sym, []).append(ohlc)
+        # Existing broadcast (must not regress)
         payload = {"event": "candle", "data": ohlc}
         for q in self.subscribers:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass
+
+    def get_chart_data(self, symbol: str) -> dict:
+        """Return chart data for Chart.js: sorted close prices + EMA-10/20 arrays.
+
+        Returns empty arrays if symbol is unknown or has no candle history.
+        """
+        candles = self.candles.get(symbol)
+        if not candles:
+            return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+
+        sorted_candles = sorted(candles, key=lambda c: c.get("time", 0))
+        closes = [float(c["close"]) for c in sorted_candles]
+        labels = [c.get("time", i) for i, c in enumerate(sorted_candles)]
+
+        ema_s = EMACalculator(10)
+        ema_l = EMACalculator(20)
+        ema_short_vals = [ema_s.update(p) for p in closes]
+        ema_long_vals = [ema_l.update(p) for p in closes]
+
+        return {
+            "labels": labels,
+            "close": closes,
+            "ema_short": ema_short_vals,
+            "ema_long": ema_long_vals,
+        }
 
     def get_positions_grouped(self) -> list[dict]:
         equity_symbols: set[str] = {
