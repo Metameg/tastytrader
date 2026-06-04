@@ -1562,6 +1562,73 @@ def test_feed_setup_candle_accepteventfields_does_not_include_time():
     )
 
 
+# --- Issue #7 (phase-4 fix): Defect 1 — malformed-candle crash guard ---
+
+def test_get_chart_data_skips_candles_missing_close_without_raising():
+    """get_chart_data must NOT raise when an accumulated candle is missing 'close'.
+    A partial OHLC candle from DXLink (e.g. market-close edge case) must be silently
+    skipped; the returned arrays must reflect only the valid candle(s), and all four
+    arrays (labels, close, ema_short, ema_long) must be equal-length."""
+    state = DashboardState()
+
+    # Accumulate a valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 100,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    # Accumulate a malformed candle missing the 'close' key entirely
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 200,
+        "open": 151.0, "high": 156.0, "low": 149.0,
+        # 'close' deliberately absent
+        "volume": 1_000_000,
+    })
+
+    # Must NOT raise — was crashing with KeyError: 'close'
+    data = state.get_chart_data("AAPL")
+
+    # Only the valid candle must survive
+    assert data["close"] == [153.0], (
+        f"Only the valid candle must be in close; got {data['close']}"
+    )
+    # All four arrays must be equal-length
+    n = len(data["close"])
+    assert len(data["labels"]) == n, "labels length must equal close length"
+    assert len(data["ema_short"]) == n, "ema_short length must equal close length"
+    assert len(data["ema_long"]) == n, "ema_long length must equal close length"
+
+
+def test_get_chart_data_skips_candles_with_none_close():
+    """get_chart_data must skip candles where close is explicitly None.
+    All surviving arrays must be equal-length and only contain valid candles."""
+    state = DashboardState()
+
+    # Valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 100,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    # Candle with close=None
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 200,
+        "open": 151.0, "high": 156.0, "low": 149.0, "close": None, "volume": 1_000_000,
+    })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [153.0], (
+        f"Candle with close=None must be filtered out; got {data['close']}"
+    )
+    n = len(data["close"])
+    assert len(data["labels"]) == n
+    assert len(data["ema_short"]) == n
+    assert len(data["ema_long"]) == n
+
+
 def test_get_chart_data_labels_are_indices_when_candles_have_no_time_field():
     """When candles do not carry a 'time' field (as the real DXLink FEED_DATA delivers
     given current FEED_SETUP), get_chart_data must fall back to integer position indices

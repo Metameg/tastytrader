@@ -99,8 +99,13 @@ class DashboardState:
             return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
 
         sorted_candles = sorted(candles, key=lambda c: c.get("time", 0))
-        closes = [float(c["close"]) for c in sorted_candles]
-        labels = [c.get("time", i) for i, c in enumerate(sorted_candles)]
+        # Filter out candles missing or having None close — partial events from DXLink
+        # (e.g. incomplete OHLC at market close) would otherwise crash with KeyError/TypeError.
+        valid_candles = [c for c in sorted_candles if c.get("close") is not None]
+        if not valid_candles:
+            return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+        closes = [float(c["close"]) for c in valid_candles]
+        labels = [c.get("time", i) for i, c in enumerate(valid_candles)]
 
         ema_s = EMACalculator(10)
         ema_l = EMACalculator(20)
