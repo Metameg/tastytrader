@@ -1546,19 +1546,17 @@ def test_dispatch_candle_forwards_raw_event_to_on_candle():
     )
 
 
-def test_feed_setup_candle_accepteventfields_does_not_include_time():
-    """Documents production gap: FEED_SETUP acceptEventFields for Candle omits 'time'.
-    get_chart_data sorts by c.get('time', 0), so in production all candles get
-    sort-key 0 — sort is a stable no-op, not a chronological sort.
-    Labels become integer indices (0, 1, 2, ...) instead of real timestamps.
-    This test pins the current state so a fix (adding 'time') is explicit and deliberate."""
+def test_feed_setup_candle_accepteventfields_includes_time():
+    """FEED_SETUP acceptEventFields for Candle must now include 'time' so that
+    get_chart_data can sort candles chronologically and produce real timestamp labels.
+    (Deliberate contract change — Defect 2 fix: 'time' was previously absent, causing
+    sort to be a no-op and labels to fall back to integer position indices.)"""
     from dashboard.streamer import _FEED_SETUP
 
     candle_fields = _FEED_SETUP["acceptEventFields"]["Candle"]
-    assert "time" not in candle_fields, (
-        "FEED_SETUP acceptEventFields['Candle'] now includes 'time'. "
-        "If this was intentional: verify get_chart_data sort + label logic work correctly "
-        "with real DXLink timestamp values and update this test to assert sort is chronological."
+    assert "time" in candle_fields, (
+        "FEED_SETUP acceptEventFields['Candle'] must include 'time' so real DXLink "
+        "candle events carry a sortable timestamp for chronological chart rendering."
     )
 
 

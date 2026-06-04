@@ -25,7 +25,7 @@ _FEED_SETUP = {
         # eventType is requested so each event object in the FULL-format
         # FEED_DATA payload self-identifies as Quote vs Candle.
         "Quote": ["eventType", "eventSymbol", "bidPrice", "askPrice"],
-        "Candle": ["eventType", "eventSymbol", "open", "high", "low", "close", "volume"],
+        "Candle": ["eventType", "eventSymbol", "time", "open", "high", "low", "close", "volume"],
     },
 }
 

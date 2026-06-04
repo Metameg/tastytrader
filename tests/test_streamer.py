@@ -534,9 +534,10 @@ async def test_quote_with_zero_bid_does_not_call_callback():
 async def test_feed_setup_candle_fields_match_what_on_candle_processes():
     """Contract: FEED_SETUP acceptEventFields['Candle'] lists exactly the fields
     the server will include in each Candle event dict.  on_candle reads 'eventSymbol'
-    and get_chart_data reads 'close' — both must be present.  'time' is currently
-    NOT requested, so get_chart_data.sort falls back to 0 for all candles and labels
-    fall back to integer indices.  This test documents the current field contract."""
+    and get_chart_data reads 'close' — both must be present.  'time' is NOW requested
+    so that get_chart_data.sort produces a true chronological sort and labels carry
+    real timestamps instead of integer position indices.
+    (Deliberate contract change in phase-4 fix — Defect 2: candle time field absent.)"""
     from dashboard.streamer import _FEED_SETUP
 
     candle_fields = _FEED_SETUP["acceptEventFields"]["Candle"]
@@ -548,12 +549,9 @@ async def test_feed_setup_candle_fields_match_what_on_candle_processes():
     assert "close" in candle_fields, (
         "FEED_SETUP must request 'close' so get_chart_data can build the close array"
     )
-
-    # 'time' is currently absent — get_chart_data sort falls back to 0 (no-op sort)
-    # If this assertion starts failing, verify get_chart_data sorts correctly with
-    # real DXLink timestamp values and update the labels/sort contract tests accordingly.
-    assert "time" not in candle_fields, (
-        "FEED_SETUP now requests 'time' for Candle events. "
-        "Update get_chart_data labels + sort tests to assert real timestamp values "
-        "are used instead of integer position indices."
+    # 'time' must now be present so get_chart_data sorts candles chronologically and
+    # labels carry real DXLink timestamps instead of falling back to position indices.
+    assert "time" in candle_fields, (
+        "FEED_SETUP must request 'time' so get_chart_data can sort candles by timestamp "
+        "and produce meaningful time-based labels (Defect 2 fix)"
     )
