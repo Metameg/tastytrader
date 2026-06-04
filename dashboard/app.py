@@ -14,8 +14,8 @@ from fastapi.templating import Jinja2Templates
 
 from src.auth import login
 from src.config import load_config
-from dashboard.api import cancel_order, fetch_balance, fetch_positions, fetch_orders, fetch_quote_token, place_order
-from dashboard.state import DashboardState
+from dashboard.api import cancel_order, fetch_balance, fetch_greeks, fetch_positions, fetch_orders, fetch_quote_token, place_order
+from dashboard.state import DashboardState, parse_occ
 from dashboard.streamer import DashboardStreamer
 
 _VALID_ACTIONS: frozenset[str] = frozenset({"Buy to Open", "Sell to Close"})
@@ -194,6 +194,16 @@ async def get_chart(symbol: str, request: Request):
         from_time = int(time.time() - 60 * 86400)
         request.app.state.streamer.add_candle(symbol, from_time)
     return state.get_chart_data(symbol)
+
+
+@app.get("/api/greeks/{symbol}")
+async def get_greeks(symbol: str, request: Request):
+    if parse_occ(symbol) is None:
+        # Equity or unrecognised symbol — return sentinel dict, no network call
+        return {"delta": "—", "gamma": "—", "theta": "—", "vega": "—", "iv": "—"}
+
+    token: str = request.app.state.session_token
+    return await fetch_greeks(token, symbol)
 
 
 @app.post("/api/orders")
