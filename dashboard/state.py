@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -107,11 +108,25 @@ class DashboardState:
         sorted_candles = sorted(candles, key=lambda c: c.get("time", 0))
         # Filter out candles missing or having None close — partial events from DXLink
         # (e.g. incomplete OHLC at market close) would otherwise crash with KeyError/TypeError.
-        valid_candles = [c for c in sorted_candles if c.get("close") is not None]
+        # Also skip candles whose close can't be parsed to a finite float (e.g. "NaN",
+        # "Infinity", or non-numeric strings) to avoid ValueError / inf/nan propagation.
+        valid_candles = []
+        for c in sorted_candles:
+            raw_close = c.get("close")
+            if raw_close is None:
+                continue
+            try:
+                close_val = float(raw_close)
+            except (ValueError, TypeError):
+                continue
+            if not math.isfinite(close_val):
+                continue
+            valid_candles.append((c, close_val))
         if not valid_candles:
             return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
-        closes = [float(c["close"]) for c in valid_candles]
-        labels = [c.get("time", i) for i, c in enumerate(valid_candles)]
+        closes = [cv for _, cv in valid_candles]
+        valid_candle_dicts = [c for c, _ in valid_candles]
+        labels = [c.get("time", i) for i, c in enumerate(valid_candle_dicts)]
 
         ema_s = EMACalculator(10)
         ema_l = EMACalculator(20)

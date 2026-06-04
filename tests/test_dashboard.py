@@ -1653,6 +1653,85 @@ def test_get_chart_data_labels_are_indices_when_candles_have_no_time_field():
     assert data["close"] == [100.0, 101.0, 102.0]
 
 
+# --- FIX 3 (security L2): defensive float parsing in get_chart_data ---
+
+def test_get_chart_data_skips_candle_with_nan_string_close():
+    """A candle with close='NaN' must be silently skipped — no exception, no nan in output.
+    All four result arrays must remain equal-length and contain only valid candles."""
+    state = DashboardState()
+
+    # Valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "open": 149.0, "high": 154.0, "low": 147.0, "close": 150.0, "volume": 1_000_000,
+    })
+    # Candle with non-finite close string
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": "NaN", "volume": 1_000_000,
+    })
+    # Another valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 300,
+        "open": 151.0, "high": 156.0, "low": 149.0, "close": 152.0, "volume": 1_000_000,
+    })
+
+    # Must not raise
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [150.0, 152.0], (
+        f"Candle with close='NaN' must be skipped; got {data['close']}"
+    )
+    n = len(data["close"])
+    assert len(data["labels"]) == n, "labels must equal close length"
+    assert len(data["ema_short"]) == n, "ema_short must equal close length"
+    assert len(data["ema_long"]) == n, "ema_long must equal close length"
+
+
+def test_get_chart_data_skips_candle_with_non_numeric_close_string():
+    """A candle with close='garbage' (non-numeric string) must be silently skipped."""
+    state = DashboardState()
+
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "close": 148.0, "open": 147.0, "high": 150.0, "low": 146.0, "volume": 1_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "close": "not-a-number", "open": 148.0, "high": 151.0, "low": 147.0, "volume": 1_000_000,
+    })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [148.0], (
+        f"Non-numeric close must be skipped; got {data['close']}"
+    )
+    n = len(data["close"])
+    assert len(data["labels"]) == n
+    assert len(data["ema_short"]) == n
+    assert len(data["ema_long"]) == n
+
+
+def test_get_chart_data_skips_candle_with_infinity_close():
+    """A candle with close='Infinity' must be skipped — math.isfinite rejects it."""
+    state = DashboardState()
+
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "close": 148.0, "open": 147.0, "high": 150.0, "low": 146.0, "volume": 1_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "close": "Infinity", "open": 148.0, "high": 151.0, "low": 147.0, "volume": 1_000_000,
+    })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [148.0], (
+        f"Infinity close must be skipped; got {data['close']}"
+    )
+
+
 # --- FIX 2 (security M2): bound per-symbol candle history to 90 entries ---
 
 def test_on_candle_caps_history_at_90_entries():
