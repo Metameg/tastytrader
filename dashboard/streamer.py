@@ -22,8 +22,10 @@ _FEED_SETUP = {
     "type": "FEED_SETUP", "channel": 1,
     "acceptAggregationPeriod": 0.1, "acceptDataFormat": "FULL",
     "acceptEventFields": {
-        "Quote": ["eventSymbol", "bidPrice", "askPrice"],
-        "Candle": ["eventSymbol", "open", "high", "low", "close", "volume"],
+        # eventType is requested so each event object in the FULL-format
+        # FEED_DATA payload self-identifies as Quote vs Candle.
+        "Quote": ["eventType", "eventSymbol", "bidPrice", "askPrice"],
+        "Candle": ["eventType", "eventSymbol", "open", "high", "low", "close", "volume"],
     },
 }
 
@@ -91,9 +93,12 @@ class DashboardStreamer:
         for sym, from_time in self._candle_symbols.items():
             add_list.append({"type": "Candle", "symbol": f"{sym}{{=d}}", "fromTime": int(from_time)})
         if add_list:
+            print(f"[DXLink] subscribing to {len(add_list)} feed(s): {[e['symbol'] for e in add_list]}")
             await ws.send(json.dumps({
                 "type": "FEED_SUBSCRIPTION", "channel": 1, "add": add_list
             }))
+        else:
+            print("[DXLink] _subscribe_all called but no symbols to subscribe yet")
 
     async def _wait_for(self, ws, expected_type: str, timeout: float = 10.0) -> dict:
         async with asyncio.timeout(timeout):
@@ -112,25 +117,46 @@ class DashboardStreamer:
             return
         if msg_type != "FEED_DATA" or msg.get("channel") != 1:
             return
-        for entry in msg.get("data", []):
-            if not isinstance(entry, list) or len(entry) < 2:
+        print(f"[DXLink] FEED_DATA received: {msg}")
+        # FULL data format: `data` is a flat list of event objects (dicts).
+        for ev in msg.get("data", []):
+            if not isinstance(ev, dict):
                 continue
-            event_type, events = entry[0], entry[1]
-            if isinstance(events, list):
-                for ev in events:
-                    if event_type == "Quote":
-                        self._dispatch_quote(ev)
-                    elif event_type == "Candle":
-                        self._dispatch_candle(ev)
+            event_type = self._classify(ev)
+            if event_type == "Quote":
+                self._dispatch_quote(ev)
+            elif event_type == "Candle":
+                self._dispatch_candle(ev)
+
+    @staticmethod
+    def _classify(ev: dict) -> str | None:
+        """Identify the event type of a FULL-format event object.
+
+        Prefers the explicit ``eventType`` field (requested in FEED_SETUP);
+        falls back to field presence so a missing eventType never silently
+        drops an event the way the old nested-format parser did.
+        """
+        et = ev.get("eventType")
+        if et in ("Quote", "Candle"):
+            return et
+        if "bidPrice" in ev or "askPrice" in ev:
+            return "Quote"
+        if "close" in ev or "open" in ev:
+            return "Candle"
+        return None
 
     def _dispatch_quote(self, ev: dict) -> None:
         bid = ev.get("bidPrice", 0.0)
         ask = ev.get("askPrice", 0.0)
+        sym = ev.get("eventSymbol", "")
         if bid <= 0 or ask <= 0:
+            print(f"[DXLink] quote dropped (zero bid/ask) — {sym} bid={bid} ask={ask}")
             return
+        last = (bid + ask) / 2
+        print(f"[DXLink] quote dispatched — {sym} bid={bid} ask={ask} last={last:.4f}")
         price_event = PriceEvent(
-            symbol=ev.get("eventSymbol", ""),
-            last=(bid + ask) / 2,
+            symbol=sym,
+            last=last,
             bid=bid,
             ask=ask,
             timestamp=time.time(),

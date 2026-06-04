@@ -22,6 +22,17 @@ class EMACalculator:
         self._ema = price * self._k + self._ema * (1 - self._k)
         return self._ema
 
+    def seed(self, price: float) -> None:
+        """Immediately initialize EMA from a single price.
+
+        Used by display contexts (dashboard) where an approximate value from
+        tick 1 is better than returning None through the warm-up period.
+        The Strategy class intentionally does NOT call this, so signal
+        generation still waits for a proper warm-up.
+        """
+        self._ema = price
+        self._buffer.clear()
+
     @property
     def value(self) -> float | None:
         return self._ema

@@ -135,17 +135,19 @@ async def place_order(
             {
                 "instrument-type": instrument_type,
                 "symbol": symbol,
-                "quantity": quantity,
+                "quantity": str(quantity),
                 "action": action,
             }
         ],
     }
+    print(f"[order] POST /orders body: {body}")
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url}/accounts/{account_number}/orders",
             json=body,
             headers={"Authorization": session_token},
         )
+        print(f"[order] response {resp.status_code}: {resp.text}")
         resp.raise_for_status()
         return resp.json()["data"]["order"]["id"]
 

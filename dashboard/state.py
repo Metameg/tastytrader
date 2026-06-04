@@ -49,8 +49,12 @@ class DashboardState:
     def on_quote(self, price_event: PriceEvent) -> None:
         s = price_event.symbol
         if s not in self._ema_short:
-            self._ema_short[s] = EMACalculator(10)
-            self._ema_long[s] = EMACalculator(20)
+            ema_short = EMACalculator(10)
+            ema_long = EMACalculator(20)
+            ema_short.seed(price_event.last)
+            ema_long.seed(price_event.last)
+            self._ema_short[s] = ema_short
+            self._ema_long[s] = ema_long
         ema_s = self._ema_short[s].update(price_event.last)
         ema_l = self._ema_long[s].update(price_event.last)
         self.quotes[s] = {
@@ -62,11 +66,13 @@ class DashboardState:
             "ema_long": ema_l,
         }
         payload = {"event": "quote", "data": self.quotes[s]}
+        n = len(self.subscribers)
+        print(f"[SSE] quote for {s} → broadcasting to {n} subscriber(s)")
         for q in self.subscribers:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
-                pass
+                print(f"[SSE] queue full — dropping quote for {s}")
 
     def on_candle(self, ohlc: dict) -> None:
         payload = {"event": "candle", "data": ohlc}

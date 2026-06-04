@@ -222,9 +222,10 @@ def test_broadcast_to_multiple_subscribers():
     assert queue_b.get_nowait()["data"]["symbol"] == "TSLA"
 
 
-def test_on_quote_ema_short_none_before_warmup():
-    """ema_short must be None until 10 quotes have been processed (EMA warmup period).
-    The 9th quote is still below the period=10 threshold, so ema_short stays None."""
+def test_on_quote_ema_short_seeded_from_first_tick():
+    """ema_short must be non-None from the very first quote because DashboardState
+    seeds each new EMACalculator with the first observed price so the detail panel
+    always has a value to display."""
     state = DashboardState()
 
     for i in range(8):
@@ -235,14 +236,15 @@ def test_on_quote_ema_short_none_before_warmup():
     state.on_quote(PriceEvent(symbol="AAPL", last=108.0, bid=99.0, ask=101.0, timestamp=8.0))
 
     item = last_queue.get_nowait()
-    assert item["data"]["ema_short"] is None, (
-        f"ema_short should be None before 10 quotes (period=10 warmup); got {item['data']['ema_short']}"
+    assert isinstance(item["data"]["ema_short"], float), (
+        f"ema_short should be a float on every tick (seeded from first price); got {item['data']['ema_short']}"
     )
 
 
-def test_on_quote_ema_long_none_before_20_warmup():
-    """After 15 quotes, ema_short (period=10) is populated but ema_long (period=20)
-    is still None — it requires 20 quotes to warm up."""
+def test_on_quote_both_emas_seeded_from_first_tick():
+    """Both ema_short and ema_long must be non-None from the first quote onward.
+    DashboardState seeds each new EMACalculator with the first observed price,
+    so neither EMA goes through a None warm-up phase for display purposes."""
     state = DashboardState()
 
     for i in range(14):
@@ -253,11 +255,11 @@ def test_on_quote_ema_long_none_before_20_warmup():
     state.on_quote(PriceEvent(symbol="AAPL", last=114.0, bid=99.0, ask=101.0, timestamp=14.0))
 
     item = last_queue.get_nowait()
-    assert item["data"]["ema_short"] is not None, (
-        "ema_short should be populated after 15 quotes (period=10 warmup complete)"
+    assert isinstance(item["data"]["ema_short"], float), (
+        "ema_short should be a float on every tick (seeded from first price)"
     )
-    assert item["data"]["ema_long"] is None, (
-        f"ema_long should still be None after only 15 quotes; got {item['data']['ema_long']}"
+    assert isinstance(item["data"]["ema_long"], float), (
+        f"ema_long should be a float on every tick (seeded from first price); got {item['data']['ema_long']}"
     )
 
 
@@ -424,7 +426,7 @@ async def test_place_order_builds_correct_body_for_equity():
     leg = body["legs"][0]
     assert leg["instrument-type"] == "Equity"
     assert leg["symbol"] == "AAPL"
-    assert leg["quantity"] == 5
+    assert leg["quantity"] == "5"
     assert leg["action"] == "Buy to Open"
 
 
@@ -454,7 +456,7 @@ async def test_place_order_builds_correct_body_for_equity_option():
     leg = kwargs["json"]["legs"][0]
     assert leg["instrument-type"] == "Equity Option"
     assert leg["symbol"] == "AAPL  260117C00150000"
-    assert leg["quantity"] == 1
+    assert leg["quantity"] == "1"
     assert leg["action"] == "Sell to Close"
 
 
@@ -636,7 +638,7 @@ async def test_place_order_puts_quantity_value_into_leg():
         )
 
     _, kwargs = mock_client.post.call_args
-    assert kwargs["json"]["legs"][0]["quantity"] == 7
+    assert kwargs["json"]["legs"][0]["quantity"] == "7"
 
 
 async def test_place_order_raises_on_non_2xx_response():
@@ -1150,21 +1152,24 @@ def test_on_quote_quote_dict_has_required_detail_panel_keys():
         assert key in q, f"Missing key '{key}' in quotes dict"
 
 
-def test_on_quote_ema_keys_are_none_during_warmup():
-    """During warm-up (fewer than 10 ticks) both EMA keys exist but hold None."""
+def test_on_quote_ema_keys_are_floats_from_first_tick():
+    """Both EMA keys must hold a float from the very first tick.
+    DashboardState seeds each new EMACalculator with the first price so the
+    detail panel never shows a dash due to a warm-up gap."""
     state = DashboardState()
     event = PriceEvent(symbol="AAPL", last=150.0, bid=149.5, ask=150.5, timestamp=1.0)
     state.on_quote(event)
     q = state.quotes["AAPL"]
-    assert q["ema_short"] is None
-    assert q["ema_long"] is None
+    assert isinstance(q["ema_short"], float)
+    assert isinstance(q["ema_long"], float)
 
 
 def test_on_quote_ema_short_populated_after_warmup():
-    """After 10 ticks ema_short must be a float; ema_long still None until tick 20."""
+    """After 10 ticks both EMAs are floats; ema_long is seeded from tick 1 and has
+    been converging for 10 ticks by this point."""
     state = DashboardState()
     for i in range(10):
         state.on_quote(PriceEvent(symbol="AAPL", last=float(100 + i), bid=99.0, ask=101.0, timestamp=float(i)))
     q = state.quotes["AAPL"]
     assert isinstance(q["ema_short"], float)
-    assert q["ema_long"] is None
+    assert isinstance(q["ema_long"], float)

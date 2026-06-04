@@ -120,17 +120,9 @@ window.fmtPnl = function (v) {
     if (statusDot) { statusDot.className = 'status-dot disconnected'; statusDot.title = 'disconnected'; }
   };
 
-  /* quote: update mark price for a symbol row */
-  es.addEventListener('quote', function (e) {
-    var data = JSON.parse(e.data);
-    var row = document.querySelector('#positions-table [data-symbol="' + CSS.escape(data.symbol) + '"]');
-    if (!row) return;
-    var cells = row.querySelectorAll('td');
-    if (cells[4]) {
-      cells[4].textContent = data.last != null ? fmtDollar(data.last) : '—';
-      cells[4].className = 'neutral';
-    }
-  });
+  /* NOTE: quote handling lives entirely in dashboard.js (mark cell, P&L cell,
+     and the detail panel). main.js intentionally does not listen for 'quote'
+     so the two SSE consumers don't both write the same mark cell. */
 
   /* account: update topbar stats */
   es.addEventListener('account', function (e) {
@@ -140,32 +132,17 @@ window.fmtPnl = function (v) {
     setText('.header-bp', fmtDollar(data.buying_power));
   });
 
-  /* positions: re-render positions table body + holdings sidebar */
+  /* positions: maintain holdings sidebar + order-form symbol suggestions.
+     NOTE: dashboard.js is the sole owner of the #positions-table rebuild
+     (it handles option grouping, live marks, and detail-panel reselection).
+     main.js must NOT touch that <tbody> or the two SSE consumers fight over
+     it and the table flickers blank. The backend broadcasts a raw array;
+     tolerate the legacy {positions:[...]} shape too. */
   es.addEventListener('positions', function (e) {
     var data = JSON.parse(e.data);
-    var tbody = document.querySelector('#positions-table tbody');
-    if (!tbody) return;
-
-    if (!data.positions || data.positions.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">no positions</td></tr>';
-      renderHoldings([]);
-      return;
-    }
-
-    tbody.innerHTML = data.positions.map(function (pos) {
-      return '<tr data-symbol="' + esc(pos.symbol) + '">' +
-        '<td class="col-left symbol-cell">' + esc(pos.symbol) + '</td>' +
-        '<td class="col-dim">' + esc(pos.instrument_type || '—') + '</td>' +
-        '<td>' + (pos.quantity != null ? pos.quantity : '—') + '</td>' +
-        '<td>' + fmtDollar(pos.avg_cost) + '</td>' +
-        '<td class="neutral">—</td>' +
-        '<td class="neutral">—</td>' +
-        '<td class="neutral">—</td>' +
-        '</tr>';
-    }).join('');
-
-    renderHoldings(data.positions);
-    updateSymbolSuggestions(data.positions);
+    var positions = Array.isArray(data) ? data : (data.positions || []);
+    renderHoldings(positions);
+    updateSymbolSuggestions(positions);
   });
 
   function updateSymbolSuggestions(positions) {

@@ -19,6 +19,7 @@ function connect() {
 }
 
 function handleQuote(quote) {
+  console.log('[SSE quote]', quote);
   const { symbol, bid, ask, last } = quote;
   const mark = (bid != null && ask != null) ? (bid + ask) / 2 : last;
   if (mark == null) return;
