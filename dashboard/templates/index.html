@@ -292,9 +292,9 @@
             </div>
           </div>
 
-          <!-- Chart placeholder (chart implemented in issue #7) -->
-          <div class="detail-chart-placeholder" id="detail-chart-placeholder">
-            <span class="detail-chart-msg">chart · coming in #7</span>
+          <!-- Chart area (issue #7) — hidden until candle data arrives -->
+          <div class="detail-chart-area detail-chart-hidden" id="detail-chart-area">
+            <canvas class="detail-chart-canvas" id="detail-chart-canvas" width="240" height="140"></canvas>
           </div>
 
         </div><!-- /detail-content -->
@@ -381,6 +381,8 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="/static/js/chart.js" defer></script>
   <script src="/static/js/main.js" defer></script>
   <script src="/static/js/order-form.js" defer></script>
   <script src="/static/js/dashboard.js" defer></script>
