@@ -700,3 +700,175 @@ def test_refresh_broadcasts_positions_as_list(client):
         f"positions SSE event data must be a plain list so handlePositions() can call "
         f".filter() on it; got {type(broadcast_data)!r}"
     )
+
+
+# --- Issue #8: GET /api/greeks/{symbol} ---
+
+_GREEKS_KEYS = ("delta", "gamma", "theta", "vega", "iv")
+_DASH = "—"
+# Valid OCC option symbol: AAPL, 2025-01-17, Call, $150
+_OCC_SYMBOL = "AAPL  250117C00150000"
+_EXPECTED_GREEKS = {
+    "delta": "0.42",
+    "gamma": "0.03",
+    "theta": "-0.05",
+    "vega": "0.12",
+    "iv": "0.28",
+}
+
+
+def test_get_greeks_returns_200_with_five_keys_for_option_symbol(client):
+    """GET /api/greeks/<OCC_SYMBOL> must return HTTP 200 with a JSON body
+    containing exactly the five greek keys: delta, gamma, theta, vega, iv."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = _EXPECTED_GREEKS
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200, (
+        f"Expected 200 for option symbol, got {response.status_code}"
+    )
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert key in data, f"Expected key '{key}' in response, got keys: {list(data.keys())}"
+
+
+def test_get_greeks_returns_correct_values_from_fetch_greeks(client):
+    """The route must return the exact dict that fetch_greeks resolves to,
+    without transforming values."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = _EXPECTED_GREEKS
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    assert response.json() == _EXPECTED_GREEKS
+
+
+def test_get_greeks_calls_fetch_greeks_with_symbol_and_token(client):
+    """The route must invoke fetch_greeks with the URL symbol and the app's
+    session_token.  Verify the call was made with the right arguments."""
+    from dashboard.app import app
+    app.state.session_token = "route-test-token"
+
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = _EXPECTED_GREEKS
+        client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    mock_fetch.assert_called_once()
+    call_kwargs = mock_fetch.call_args[1] if mock_fetch.call_args[1] else {}
+    call_args = mock_fetch.call_args[0]
+    # Accept either positional or keyword arguments
+    called_token = call_kwargs.get("session_token") or (call_args[0] if call_args else None)
+    called_symbol = call_kwargs.get("symbol") or (call_args[1] if len(call_args) > 1 else None)
+    assert called_token == "route-test-token", (
+        f"Expected session_token='route-test-token', got: {called_token!r}"
+    )
+    assert called_symbol == _OCC_SYMBOL, (
+        f"Expected symbol='{_OCC_SYMBOL}', got: {called_symbol!r}"
+    )
+
+
+def test_get_greeks_returns_all_dashes_for_equity_symbol_without_calling_chain_api(client):
+    """When the symbol is an equity (not an OCC option), the route must NOT call
+    fetch_greeks and must return a response with all five greeks as '—'.
+    This enforces the equity short-circuit: greeks are never fetched for equities."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        response = client.get("/api/greeks/AAPL")
+
+    assert response.status_code == 200, (
+        f"Expected 200 for equity symbol, got {response.status_code}"
+    )
+    mock_fetch.assert_not_called(), (
+        "fetch_greeks must NOT be called for an equity symbol (no option-chain request)"
+    )
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data.get(key) == _DASH, (
+            f"Expected '—' for key '{key}' on equity symbol, got: {data.get(key)!r}"
+        )
+
+
+def test_get_greeks_returns_all_dashes_for_garbage_symbol(client):
+    """An unrecognised/garbage symbol must return HTTP 200 with all five greeks
+    as '—' and must NOT raise or call the option-chain API."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        response = client.get("/api/greeks/NOT_AN_OCC_SYMBOL_AT_ALL")
+
+    assert response.status_code == 200
+    mock_fetch.assert_not_called()
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data.get(key) == _DASH, (
+            f"Expected '—' for '{key}' on garbage symbol, got: {data.get(key)!r}"
+        )
+
+
+def test_get_greeks_returns_dashes_gracefully_when_fetch_greeks_returns_dashes(client):
+    """Even when fetch_greeks returns all-dashes (cert sandbox scenario),
+    the route must return 200 with those dash values transparently."""
+    all_dashes = {k: _DASH for k in _GREEKS_KEYS}
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = all_dashes
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data[key] == _DASH
+
+
+# --- Edge-case route tests (Phase 4) ---
+
+
+def test_get_greeks_zero_value_greeks_returned_verbatim(client):
+    """When fetch_greeks returns a zero-value greek (e.g. delta '0'), the route
+    must NOT replace it with the dash sentinel.  Verifies the route passes the
+    fetch_greeks result straight through without filtering zero values."""
+    zero_greeks = {k: "0" for k in _GREEKS_KEYS}
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = zero_greeks
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data[key] == "0", (
+            f"Expected '0' for key '{key}' (zero is a valid greek), "
+            f"got {data[key]!r} — route must not sentinel zero values"
+        )
+
+
+def test_get_greeks_passes_occ_symbol_verbatim_to_fetch_greeks(client):
+    """The OCC symbol in the URL path (including embedded spaces decoded by
+    FastAPI) must be forwarded to fetch_greeks exactly as received — no
+    transformation of the symbol before the call."""
+    from dashboard.app import app
+    app.state.session_token = "verbatim-token"
+
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = {k: "0.1" for k in _GREEKS_KEYS}
+        client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    mock_fetch.assert_called_once()
+    # Accept either positional or keyword call style
+    args = mock_fetch.call_args[0]
+    kwargs = mock_fetch.call_args[1] if mock_fetch.call_args[1] else {}
+    called_symbol = kwargs.get("symbol") or (args[1] if len(args) > 1 else None)
+    assert called_symbol == _OCC_SYMBOL, (
+        f"fetch_greeks must receive the OCC symbol verbatim; "
+        f"expected {_OCC_SYMBOL!r}, got {called_symbol!r}"
+    )
+
+
+def test_get_greeks_partial_greeks_passed_through_unchanged(client):
+    """When fetch_greeks returns a mix of real values and '—' (partial greeks),
+    the route must forward that mixed dict verbatim — no normalisation."""
+    partial = {"delta": "0.42", "gamma": _DASH, "theta": _DASH, "vega": "0.12", "iv": _DASH}
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = partial
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    assert response.json() == partial, (
+        "Route must return the fetch_greeks result unchanged; "
+        f"expected {partial}, got {response.json()}"
+    )

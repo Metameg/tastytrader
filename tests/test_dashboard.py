@@ -1173,3 +1173,360 @@ def test_on_quote_ema_short_populated_after_warmup():
     q = state.quotes["AAPL"]
     assert isinstance(q["ema_short"], float)
     assert isinstance(q["ema_long"], float)
+
+
+# --- fetch_greeks (Issue #8) ---
+
+# OCC symbol used across greeks tests: AAPL, expiry 2025-01-17, Call, $150
+_OPTION_SYMBOL = "AAPL  250117C00150000"
+_UNDERLYING = "AAPL"
+
+# Canonical full API response shape expected from /option-chains/<underlying>
+_GREEKS_API_RESPONSE = {
+    "data": {
+        "items": [
+            {
+                "symbol": _OPTION_SYMBOL,
+                "delta": "0.42",
+                "gamma": "0.03",
+                "theta": "-0.05",
+                "vega": "0.12",
+                "implied-volatility": "0.28",
+            }
+        ]
+    }
+}
+
+# Expected normalised dict returned by fetch_greeks when greeks are present
+_EXPECTED_GREEKS = {
+    "delta": "0.42",
+    "gamma": "0.03",
+    "theta": "-0.05",
+    "vega": "0.12",
+    "iv": "0.28",
+}
+
+_DASH = "—"
+
+
+async def test_fetch_greeks_hits_option_chain_endpoint_with_underlying():
+    """fetch_greeks must call /option-chains/<UNDERLYING> where UNDERLYING is
+    derived from the OCC symbol via parse_occ.  URL must contain the correct path."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = _GREEKS_API_RESPONSE
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    call_args, call_kwargs = mock_client.get.call_args
+    url = call_args[0] if call_args else call_kwargs.get("url", "")
+    assert f"/option-chains/{_UNDERLYING}" in url, (
+        f"Expected URL to contain /option-chains/{_UNDERLYING}, got: {url}"
+    )
+
+
+async def test_fetch_greeks_sends_auth_header():
+    """fetch_greeks must pass Authorization: <session_token> header."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = _GREEKS_API_RESPONSE
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await fetch_greeks(session_token="my-secret-token", symbol=_OPTION_SYMBOL)
+
+    _, kwargs = mock_client.get.call_args
+    assert kwargs["headers"]["Authorization"] == "my-secret-token", (
+        "Authorization header must equal the session_token passed in"
+    )
+
+
+async def test_fetch_greeks_returns_all_five_greek_keys_when_contract_found():
+    """When a matching OCC contract with full greeks is found, fetch_greeks must
+    return a dict with exactly delta, gamma, theta, vega, iv keys and their values."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = _GREEKS_API_RESPONSE
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert key in result, f"Expected key '{key}' in result dict, got: {result.keys()}"
+    assert result == _EXPECTED_GREEKS
+
+
+async def test_fetch_greeks_returns_dashes_when_items_list_is_empty():
+    """When data.items is an empty list, fetch_greeks must return all five greeks
+    as the em-dash sentinel '—' and must NOT raise."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"items": []}}
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for key '{key}' when items list is empty, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_when_occ_symbol_not_in_items():
+    """When the API returns items but none match the requested OCC symbol,
+    fetch_greeks must return all five greeks as '—' and must NOT raise."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": "AAPL  250117C00200000",  # different strike
+                    "delta": "0.10",
+                    "gamma": "0.01",
+                    "theta": "-0.02",
+                    "vega": "0.05",
+                    "implied-volatility": "0.22",
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' when symbol not found in items, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_when_greeks_fields_missing_from_contract():
+    """When the matching contract exists but lacks greeks fields (cert sandbox
+    returning no greeks), fetch_greeks must return all five as '—' without raising."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    # No delta/gamma/theta/vega/implied-volatility fields
+                    "underlying-symbol": "AAPL",
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' when greeks fields absent, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_on_http_error():
+    """When httpx raises an HTTP error (e.g. 401/500), fetch_greeks must return
+    all five greeks as '—' and must NOT propagate the exception."""
+    from dashboard.api import fetch_greeks
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.HTTPStatusError(
+        "401 Unauthorized",
+        request=MagicMock(),
+        response=MagicMock(status_code=401),
+    )
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="bad-token", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' on HTTP error, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_on_network_error():
+    """When httpx raises a network-level error (ConnectError), fetch_greeks must
+    return all five greeks as '—' and must NOT propagate the exception."""
+    from dashboard.api import fetch_greeks
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.ConnectError("connection refused")
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' on network error, got: {result[key]!r}"
+        )
+
+
+# --- Edge-case tests (Phase 4) ---
+
+
+async def test_fetch_greeks_preserves_zero_string_value():
+    """A greek that is legitimately "0" (string) must NOT be replaced by the
+    sentinel.  This is a regression guard for the _val() fix: v not in (None,
+    "", "0") was the broken form; v is not None and v != "" is correct."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    "delta": "0",
+                    "gamma": "0",
+                    "theta": "0",
+                    "vega": "0",
+                    "implied-volatility": "0",
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == "0", (
+            f"Expected '0' for '{key}' when greek value is zero string, "
+            f"got {result[key]!r} — zero values must be preserved, not sentinelled"
+        )
+
+
+async def test_fetch_greeks_preserves_integer_zero_value():
+    """A greek returned as the integer 0 (not the string "0") must also be
+    preserved.  The API may return numeric types; str(0) == "0", not "—"."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    "delta": 0,
+                    "gamma": 0,
+                    "theta": 0,
+                    "vega": 0,
+                    "implied-volatility": 0,
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == "0", (
+            f"Expected '0' for '{key}' when greek value is integer 0, "
+            f"got {result[key]!r} — integer zero must not be treated as missing"
+        )
+
+
+async def test_fetch_greeks_partial_greeks_present_others_dashes():
+    """When only some greek fields are present on the matched contract, the
+    present ones must be returned as-is and the absent ones must be '—'."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    "delta": "0.55",
+                    # gamma, theta, vega, implied-volatility intentionally absent
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    assert result["delta"] == "0.55", (
+        f"Expected delta='0.55' (present in contract), got {result['delta']!r}"
+    )
+    for key in ("gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for absent field '{key}', got {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_on_request_error_base_class():
+    """httpx.RequestError (the base class for all network errors, e.g. a
+    ReadTimeout) must also result in all-dashes — not just ConnectError."""
+    from dashboard.api import fetch_greeks
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.TimeoutException("timed out")
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' on TimeoutException, got: {result[key]!r}"
+        )
