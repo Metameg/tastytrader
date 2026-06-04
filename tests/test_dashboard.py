@@ -1343,3 +1343,246 @@ def test_get_chart_data_ema_final_value_matches_ema_calculator():
         f"ema_long final value {data['ema_long'][-1]} does not match EMACalculator(20) "
         f"expected {ema_long_ref.value}"
     )
+
+
+# --- Issue #7: edge cases ---
+
+def test_get_chart_data_ema_warm_up_none_when_fewer_candles_than_long_period():
+    """With fewer candles than the long EMA period (5 < 20), all ema_long entries
+    must be None (warm-up region).  All four arrays must be equal length."""
+    state = DashboardState()
+    closes = [float(150 + i) for i in range(5)]
+    for i, close_price in enumerate(closes):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+
+    # All four arrays must be the same length
+    n = len(data["close"])
+    assert n == 5
+    assert len(data["labels"]) == n, "labels length must equal close length"
+    assert len(data["ema_short"]) == n, "ema_short length must equal close length"
+    assert len(data["ema_long"]) == n, "ema_long length must equal close length"
+
+    # With only 5 data points both EMA warm-ups (period 10, 20) are incomplete
+    assert all(v is None for v in data["ema_long"]), (
+        "All ema_long entries must be None when candle count (5) < long period (20)"
+    )
+    assert all(v is None for v in data["ema_short"]), (
+        "All ema_short entries must be None when candle count (5) < short period (10)"
+    )
+
+
+def test_get_chart_data_ema_long_none_during_warmup_short_resolves_after_period():
+    """After exactly 10 candles ema_short resolves to a float but ema_long remains
+    None (period=20 not yet reached).  Both arrays are still the same length as close."""
+    state = DashboardState()
+    for i in range(10):
+        state.on_candle({
+            "eventSymbol": "SPY{=d}",
+            "time": i,
+            "open": 450.0, "high": 455.0, "low": 448.0,
+            "close": float(450 + i), "volume": 2_000_000,
+        })
+
+    data = state.get_chart_data("SPY")
+
+    n = len(data["close"])
+    assert n == 10
+    assert len(data["ema_short"]) == n
+    assert len(data["ema_long"]) == n
+    # ema_short warm-up completes exactly at period=10 (last element is float)
+    assert isinstance(data["ema_short"][-1], float), (
+        "ema_short[-1] must be a float after 10 candles (period=10)"
+    )
+    # ema_long warm-up is not complete with only 10 candles (period=20)
+    assert all(v is None for v in data["ema_long"]), (
+        "All ema_long entries must be None when candle count (10) < long period (20)"
+    )
+
+
+def test_get_chart_data_out_of_order_candles_sorted_by_time():
+    """Candles delivered out of chronological order must be returned sorted by 'time'.
+    The close array and labels must reflect the sorted order."""
+    state = DashboardState()
+    # Feed candles out of order: time=300, 100, 200
+    for time_val, close_val in [(300, 153.0), (100, 143.0), (200, 148.0)]:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": time_val,
+            "open": close_val - 1, "high": close_val + 1, "low": close_val - 2,
+            "close": close_val, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [143.0, 148.0, 153.0], (
+        f"Expected closes sorted by time [143, 148, 153]; got {data['close']}"
+    )
+    assert data["labels"] == [100, 200, 300], (
+        f"Expected labels sorted by time [100, 200, 300]; got {data['labels']}"
+    )
+
+
+def test_on_candle_different_symbols_stored_separately():
+    """Candles for AAPL and SPY must accumulate in separate buckets.
+    Retrieving one symbol must not include candles from the other."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "SPY{=d}", "time": 100,
+        "open": 450.0, "high": 455.0, "low": 448.0, "close": 451.0, "volume": 5_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "open": 152.0, "high": 157.0, "low": 150.0, "close": 155.0, "volume": 1_000_000,
+    })
+
+    aapl_data = state.get_chart_data("AAPL")
+    spy_data = state.get_chart_data("SPY")
+
+    assert aapl_data["close"] == [153.0, 155.0], (
+        f"AAPL must have only its own candles; got {aapl_data['close']}"
+    )
+    assert spy_data["close"] == [451.0], (
+        f"SPY must have only its own candle; got {spy_data['close']}"
+    )
+
+
+def test_on_candle_spy_suffix_normalized_not_retrievable_with_suffix():
+    """SPY{=d} must be stored under the plain key 'SPY', confirming the suffix
+    normalization works for symbols other than AAPL."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "SPY{=d}", "time": 100,
+        "open": 450.0, "high": 455.0, "low": 448.0, "close": 451.0, "volume": 5_000_000,
+    })
+
+    # Retrievable via plain symbol
+    data_plain = state.get_chart_data("SPY")
+    assert data_plain["close"] == [451.0], (
+        "SPY{=d} candle must be accessible via plain key 'SPY'"
+    )
+
+    # NOT retrievable via suffixed key
+    data_suffixed = state.get_chart_data("SPY{=d}")
+    assert data_suffixed["close"] == [], (
+        "Suffixed key 'SPY{=d}' must return empty arrays"
+    )
+
+
+# --- Issue #7: data-contract — candle event key shape vs FEED_SETUP acceptEventFields ---
+
+def test_on_candle_reads_eventSymbol_key_as_sent_by_real_streamer():
+    """The streamer's _dispatch_candle forwards the raw FEED_DATA event dict verbatim
+    to on_candle.  FEED_SETUP requests 'eventSymbol' for Candle events, so on_candle
+    must normalize via ohlc.get('eventSymbol'), not any other key name.
+    Uses exactly the keys that FEED_SETUP acceptEventFields['Candle'] requests."""
+    state = DashboardState()
+    real_streamer_event = {
+        "eventType": "Candle",
+        "eventSymbol": "MSFT{=d}",
+        "open": 420.0,
+        "high": 425.0,
+        "low": 418.0,
+        "close": 422.0,
+        "volume": 2_000_000,
+    }
+    state.on_candle(real_streamer_event)
+
+    data = state.get_chart_data("MSFT")
+    assert len(data["close"]) == 1, (
+        "on_candle must read 'eventSymbol' (the key FEED_SETUP requests for Candle) "
+        "to normalize the symbol; got no data under plain key 'MSFT'"
+    )
+    assert data["close"][0] == 422.0
+
+
+def test_dispatch_candle_forwards_raw_event_to_on_candle():
+    """DashboardStreamer._dispatch_candle must forward the raw event dict to
+    candle_callback without modification.  The dict received by on_candle must
+    contain the same keys the FEED_DATA message carried — specifically 'eventSymbol'
+    and 'close' — so state.get_chart_data can process them correctly."""
+    from dashboard.streamer import DashboardStreamer
+
+    received: list[dict] = []
+
+    def capture_candle(ev: dict) -> None:
+        received.append(ev)
+
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=lambda e: None,
+        candle_callback=capture_candle,
+    )
+
+    raw_event = {
+        "eventType": "Candle",
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0,
+        "high": 155.0,
+        "low": 148.0,
+        "close": 153.0,
+        "volume": 1_000_000,
+    }
+    streamer._dispatch_candle(raw_event)
+
+    assert len(received) == 1, "_dispatch_candle must call candle_callback exactly once"
+    ev = received[0]
+    assert ev.get("eventSymbol") == "AAPL{=d}", (
+        "_dispatch_candle must forward 'eventSymbol' unchanged so on_candle can strip suffix"
+    )
+    assert ev.get("close") == 153.0, (
+        "_dispatch_candle must forward 'close' unchanged so get_chart_data can read it"
+    )
+
+
+def test_feed_setup_candle_accepteventfields_does_not_include_time():
+    """Documents production gap: FEED_SETUP acceptEventFields for Candle omits 'time'.
+    get_chart_data sorts by c.get('time', 0), so in production all candles get
+    sort-key 0 — sort is a stable no-op, not a chronological sort.
+    Labels become integer indices (0, 1, 2, ...) instead of real timestamps.
+    This test pins the current state so a fix (adding 'time') is explicit and deliberate."""
+    from dashboard.streamer import _FEED_SETUP
+
+    candle_fields = _FEED_SETUP["acceptEventFields"]["Candle"]
+    assert "time" not in candle_fields, (
+        "FEED_SETUP acceptEventFields['Candle'] now includes 'time'. "
+        "If this was intentional: verify get_chart_data sort + label logic work correctly "
+        "with real DXLink timestamp values and update this test to assert sort is chronological."
+    )
+
+
+def test_get_chart_data_labels_are_indices_when_candles_have_no_time_field():
+    """When candles do not carry a 'time' field (as the real DXLink FEED_DATA delivers
+    given current FEED_SETUP), get_chart_data must fall back to integer position indices
+    for labels (c.get('time', i) returns i).  This confirms the fallback path works
+    without KeyError and the chart renders with index labels."""
+    state = DashboardState()
+    for close_price in [100.0, 101.0, 102.0]:
+        state.on_candle({
+            "eventType": "Candle",
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1,
+            "high": close_price + 1,
+            "low": close_price - 2,
+            "close": close_price,
+            "volume": 1_000_000,
+            # Deliberately NO "time" key — matches real FEED_DATA with current FEED_SETUP
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert data["labels"] == [0, 1, 2], (
+        "Without 'time' field, labels must be integer position indices [0, 1, 2]; "
+        f"got {data['labels']}"
+    )
+    assert data["close"] == [100.0, 101.0, 102.0]

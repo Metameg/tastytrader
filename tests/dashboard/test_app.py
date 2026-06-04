@@ -733,6 +733,44 @@ def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
     )
 
 
+# --- Issue #7: /api/chart route edge cases ---
+
+def test_get_chart_returns_four_keys_for_unknown_symbol(client):
+    """All four chart keys must be present even for a symbol with no history.
+    The frontend always destructures {labels, close, ema_short, ema_long}."""
+    response = client.get("/api/chart/TOTALLY_UNKNOWN_SYM_XYZQ")
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("labels", "close", "ema_short", "ema_long"):
+        assert key in data, f"Key '{key}' missing from empty-symbol chart response"
+
+
+def test_get_chart_close_in_chronological_order_when_candles_fed_out_of_order(client):
+    """Even if candles are accumulated out of order, the route must return closes
+    sorted by time so Chart.js renders the line left-to-right correctly."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("MSFT", None)
+
+    # Feed out of order: time=300, 100, 200
+    for time_val, close_val in [(300, 303.0), (100, 301.0), (200, 302.0)]:
+        app.state.dashboard.on_candle({
+            "eventSymbol": "MSFT{=d}",
+            "time": time_val,
+            "open": close_val - 1, "high": close_val + 1, "low": close_val - 2,
+            "close": close_val, "volume": 1_000_000,
+        })
+
+    response = client.get("/api/chart/MSFT")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("MSFT", None)
+
+    data = response.json()
+    assert data["close"] == [301.0, 302.0, 303.0], (
+        f"Expected closes sorted by time; got {data.get('close')}"
+    )
+
+
 def test_refresh_broadcasts_positions_as_list(client):
     """_refresh must broadcast the positions list directly (not wrapped in a dict)
     because JS handlePositions() calls .filter() on the received value.
