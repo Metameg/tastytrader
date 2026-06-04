@@ -1530,3 +1530,42 @@ async def test_fetch_greeks_returns_dashes_on_request_error_base_class():
         assert result[key] == _DASH, (
             f"Expected '—' for '{key}' on TimeoutException, got: {result[key]!r}"
         )
+
+
+async def test_fetch_greeks_returns_dashes_when_data_has_no_items_key():
+    """Contract assumption guard: fetch_greeks expects data["items"] (a list).
+    If the real /option-chains endpoint returns {"data": [...]} directly
+    (no "items" wrapper), the KeyError is caught and all-dashes are returned
+    rather than raising.  This test documents the shape assumption and confirms
+    graceful degradation if the assumption is wrong."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    # Simulate a response where "data" is a list directly, not {"items": [...]}
+    mock_resp.json.return_value = {
+        "data": [
+            {
+                "symbol": _OPTION_SYMBOL,
+                "delta": "0.42",
+                "gamma": "0.03",
+                "theta": "-0.05",
+                "vega": "0.12",
+                "implied-volatility": "0.28",
+            }
+        ]
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' when data has no items key, got: {result[key]!r} — "
+            f"if this fails it means the parser now handles list-direct data, "
+            f"which would be a behaviour change worth reviewing"
+        )
