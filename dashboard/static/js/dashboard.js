@@ -1,4 +1,5 @@
 const statusDot = document.querySelector('.status-dot');
+const _GREEKS_EMPTY = { delta: '—', gamma: '—', theta: '—', vega: '—', iv: '—' };
 let es;
 let selectedSymbol = null;
 let selectedRow = null;
@@ -108,7 +109,7 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
     greeksSection.removeAttribute('hidden');
   } else {
     greeksSection.setAttribute('hidden', '');
-    populateGreeks({ delta: '—', gamma: '—', theta: '—', vega: '—', iv: '—' });
+    populateGreeks(_GREEKS_EMPTY);
   }
 
   // Live quote fields (may be null on first populate before warm-up)
@@ -290,7 +291,7 @@ document.addEventListener('click', e => {
         populateGreeks(data);
       })
       .catch(() => {
-        populateGreeks({ delta: '—', gamma: '—', theta: '—', vega: '—', iv: '—' });
+        populateGreeks(_GREEKS_EMPTY);
       });
   }
 });

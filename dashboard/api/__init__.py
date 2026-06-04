@@ -202,7 +202,7 @@ async def fetch_greeks(
             )
             resp.raise_for_status()
             items: list[dict] = resp.json()["data"]["items"]
-    except Exception:
+    except (httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
         return dict(_GREEKS_SENTINEL)
 
     contract: dict | None = next(

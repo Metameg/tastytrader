@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from src.auth import login
 from src.config import load_config
 from dashboard.api import cancel_order, fetch_balance, fetch_greeks, fetch_positions, fetch_orders, fetch_quote_token, place_order
-from dashboard.state import DashboardState
+from dashboard.state import DashboardState, parse_occ
 from dashboard.streamer import DashboardStreamer
 
 _VALID_ACTIONS: frozenset[str] = frozenset({"Buy to Open", "Sell to Close"})
@@ -182,26 +182,12 @@ async def get_quote(symbol: str, request: Request):
 
 @app.get("/api/greeks/{symbol}")
 async def get_greeks(symbol: str, request: Request):
-    from dashboard.state import parse_occ
-
-    parsed = parse_occ(symbol)
-    if parsed is None:
+    if parse_occ(symbol) is None:
         # Equity or unrecognised symbol — return sentinel dict, no network call
         return {"delta": "—", "gamma": "—", "theta": "—", "vega": "—", "iv": "—"}
 
     token: str = request.app.state.session_token
-    try:
-        return await fetch_greeks(token, symbol)
-    except httpx.RequestError as exc:
-        return JSONResponse(
-            status_code=502,
-            content={"error": f"Could not reach brokerage: {exc}"},
-        )
-    except httpx.HTTPStatusError as exc:
-        return JSONResponse(
-            status_code=exc.response.status_code,
-            content={"error": exc.response.text},
-        )
+    return await fetch_greeks(token, symbol)
 
 
 @app.post("/api/orders")
