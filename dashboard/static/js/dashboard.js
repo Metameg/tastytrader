@@ -272,12 +272,20 @@ document.addEventListener('click', e => {
   fetch('/api/chart/' + encodeURIComponent(symbol))
     .then(r => r.json())
     .then(data => {
+      // Guard stale responses: rapid A→B selection can have A's response arrive after B's.
+      // symbol is captured from the closure at click time; selectedSymbol is the current
+      // module-level selection. If they differ this response is stale — discard it.
+      if (symbol !== selectedSymbol) return;
       if (data.close && data.close.length > 0 && typeof window.updateChart === 'function') {
+        if (chartArea) chartArea.classList.remove('detail-chart-hidden');
         window.updateChart(data.labels, data.close, data.ema_short, data.ema_long);
       }
       // If arrays are empty, chart area stays hidden — no error
+    })
+    .catch(() => {
+      // Network/parse error — chart area stays hidden, no error shown (AC4)
+      if (chartArea) chartArea.classList.add('detail-chart-hidden');
     });
-    // No .catch() — network errors silently leave chart hidden
 });
 
 connect();
