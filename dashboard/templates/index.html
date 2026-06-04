@@ -27,11 +27,11 @@
       </div>
       <div class="stat-group">
         <span class="stat-label">nlv</span>
-        <span class="stat-value header-nlv">{{ net_liquidating_value }}</span>
+        <span class="stat-value header-nlv">{{ net_liquidating_value | fmt_dollar }}</span>
       </div>
       <div class="stat-group">
         <span class="stat-label">buying power</span>
-        <span class="stat-value header-bp">{{ buying_power }}</span>
+        <span class="stat-value header-bp">{{ buying_power | fmt_dollar }}</span>
       </div>
       <div class="stat-group hide-xs">
         <span class="stat-label">day p&amp;l</span>
@@ -113,14 +113,14 @@
                   <td class="col-left symbol-cell">{{ pos.symbol }}</td>
                   <td class="col-dim">{{ pos.instrument_type }}</td>
                   <td>{{ pos.quantity }}</td>
-                  <td>{{ pos.avg_cost }}</td>
-                  <td class="mark neutral" data-col="mark">{{ pos.current_price if pos.current_price is not none else "—" }}</td>
+                  <td>{{ pos.avg_cost | fmt_dollar }}</td>
+                  <td class="mark neutral" data-col="mark">{{ pos.current_price | fmt_dollar if pos.current_price is not none else "—" }}</td>
                   <td class="pnl neutral" data-col="pnl">
                     {% if pos.pl is not none and pos.pl != 0 %}
                       {% if pos.pl > 0 %}
-                        <span class="chip pl-positive">+{{ "%.2f"|format(pos.pl) }}</span>
+                        <span class="chip pl-positive">{{ pos.pl | fmt_pnl }}</span>
                       {% else %}
-                        <span class="chip pl-negative">{{ "%.2f"|format(pos.pl) }}</span>
+                        <span class="chip pl-negative">{{ pos.pl | fmt_pnl }}</span>
                       {% endif %}
                     {% else %}
                       <span class="chip neutral">—</span>
@@ -138,14 +138,14 @@
                     <td class="col-left symbol-cell">{{ leg.symbol }}</td>
                     <td class="col-dim">{{ leg.instrument_type }}</td>
                     <td>{{ leg.quantity }}</td>
-                    <td>{{ leg.avg_cost }}</td>
-                    <td class="mark neutral" data-col="mark">{{ leg.current_price if leg.current_price is not none else "—" }}</td>
+                    <td>{{ leg.avg_cost | fmt_dollar }}</td>
+                    <td class="mark neutral" data-col="mark">{{ leg.current_price | fmt_dollar if leg.current_price is not none else "—" }}</td>
                     <td class="pnl neutral" data-col="pnl">
                       {% if leg.pl is not none and leg.pl != 0 %}
                         {% if leg.pl > 0 %}
-                          <span class="chip pl-positive">+{{ "%.2f"|format(leg.pl) }}</span>
+                          <span class="chip pl-positive">{{ leg.pl | fmt_pnl }}</span>
                         {% else %}
-                          <span class="chip pl-negative">{{ "%.2f"|format(leg.pl) }}</span>
+                          <span class="chip pl-negative">{{ leg.pl | fmt_pnl }}</span>
                         {% endif %}
                       {% else %}
                         <span class="chip neutral">—</span>
@@ -187,16 +187,17 @@
             </thead>
             <tbody>
               {% for order in orders %}
+              {% set side_class = 'buy-action' if order.action.startswith('Buy') else 'sell-action' %}
               <tr data-order-id="{{ order.id }}">
                 <td class="col-left symbol-cell">{{ order.symbol }}</td>
-                <td class="col-dim">{{ order.action }}</td>
+                <td class="col-dim {{ side_class }}">{{ order.action }}</td>
                 <td class="col-dim">{{ order.order_type }}</td>
                 <td>{{ order.quantity }}</td>
-                <td>{{ order.price }}</td>
+                <td class="{{ side_class }}">{{ order.price | fmt_dollar }}</td>
                 <td class="col-left">
                   <span class="status-chip status-{{ order.status | lower }}">{{ order.status }}</span>
                 </td>
-                <td class="col-dim">{{ order.time }}</td>
+                <td>{{ order.time }}</td>
                 <td class="col-end">
                   {% if order.status in ('Received', 'Routed', 'Live') %}
                   <button class="cancel-btn" data-order-id="{{ order.id }}" aria-label="Cancel order {{ order.id }}">✕</button>
@@ -302,25 +303,83 @@
     </div><!-- /panels-area -->
   </div><!-- /workspace -->
 
-  <!-- Order entry bar -->
+  <!-- Entry bar — triggers order modal -->
   <footer class="entry-bar">
-    <form id="order-form" class="order-form" autocomplete="off" novalidate>
-      <input id="of-symbol" type="text" placeholder="symbol" required
-             autocapitalize="characters" autocorrect="off" spellcheck="false">
-      <select id="of-instrument-type">
-        <option value="Equity">equity</option>
-        <option value="Equity Option">option</option>
-      </select>
-      <select id="of-action">
-        <option value="Buy to Open">buy</option>
-        <option value="Sell to Close">sell</option>
-      </select>
-      <input id="of-quantity" type="number" placeholder="qty" min="1" required inputmode="numeric">
-      <input id="of-limit-price" type="number" placeholder="limit" step="0.01" min="0.01" required inputmode="decimal">
-      <button type="submit" class="btn-primary">place order</button>
-      <span id="order-feedback" class="order-feedback" role="status" aria-live="polite"></span>
-    </form>
+    <span class="entry-bar-label">Order Entry</span>
+    <button class="btn-new-order" id="btn-new-order" type="button">+ New Order</button>
   </footer>
+
+  <!-- Order modal -->
+  <div class="order-modal-overlay" id="order-modal-overlay" hidden>
+    <div class="order-modal" role="dialog" aria-modal="true" aria-label="Place Order">
+
+      <!-- Header: symbol search + close -->
+      <div class="order-modal-header">
+        <div class="order-search-wrap">
+          <span class="order-search-icon">⌕</span>
+          <input id="of-symbol" type="text" class="order-symbol-input"
+                 placeholder="Search symbol…" list="symbol-suggestions"
+                 autocapitalize="characters" autocorrect="off" spellcheck="false">
+          <datalist id="symbol-suggestions">
+            {% for pos in positions %}
+            <option value="{{ pos.symbol }}">
+            {% endfor %}
+          </datalist>
+        </div>
+        <button class="order-modal-close" id="order-modal-close" type="button" aria-label="Close">✕</button>
+      </div>
+
+      <!-- Buy / Sell tabs -->
+      <div class="order-side-tabs">
+        <button class="order-side-tab active" type="button" data-action="Buy to Open">Buy</button>
+        <button class="order-side-tab sell" type="button" data-action="Sell to Close">Sell</button>
+      </div>
+
+      <!-- Form body -->
+      <form id="order-form" class="order-modal-form" autocomplete="off" novalidate>
+        <input type="hidden" id="of-action" value="Buy to Open">
+
+        <!-- Order Type + Quantity -->
+        <div class="order-row">
+          <div class="order-field">
+            <label class="order-label" for="of-instrument-type">Order Type</label>
+            <select id="of-instrument-type" class="order-select">
+              <option value="Equity">EQUITY</option>
+              <option value="Equity Option">OPTION</option>
+            </select>
+          </div>
+          <div class="order-field">
+            <label class="order-label" for="of-quantity">Quantity</label>
+            <input id="of-quantity" type="number" class="order-input"
+                   placeholder="0" min="1" required inputmode="numeric">
+          </div>
+        </div>
+
+        <!-- Limit Price -->
+        <div class="order-field-full">
+          <label class="order-label" for="of-limit-price">Limit Price</label>
+          <input id="of-limit-price" type="number" class="order-input order-input-price"
+                 placeholder="0.00" step="0.01" min="0.01" required inputmode="decimal">
+        </div>
+
+        <!-- Time-in-Force -->
+        <div class="order-field-full">
+          <label class="order-label" for="of-tif">Time-in-Force</label>
+          <select id="of-tif" class="order-select">
+            <option value="Day">Day</option>
+            <option value="GTC">GTC</option>
+          </select>
+        </div>
+
+        <!-- Submit -->
+        <button type="submit" class="btn-place-order" id="btn-place-order">Place Order</button>
+
+        <!-- Feedback -->
+        <span id="order-feedback" class="order-feedback" role="status" aria-live="polite"></span>
+      </form>
+
+    </div>
+  </div>
 
   <script src="/static/js/main.js" defer></script>
   <script src="/static/js/order-form.js" defer></script>

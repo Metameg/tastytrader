@@ -90,6 +90,25 @@ app.mount("/static", StaticFiles(directory=_BASE / "static"), name="static")
 _templates = Jinja2Templates(directory=_BASE / "templates")
 
 
+def _fmt_dollar(value: object) -> str:
+    try:
+        return f"${float(str(value).replace(',', '')):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_pnl(value: object) -> str:
+    try:
+        n = float(str(value).replace(",", ""))
+        return f"{'+' if n >= 0 else '-'}${abs(n):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+_templates.env.filters["fmt_dollar"] = _fmt_dollar
+_templates.env.filters["fmt_pnl"] = _fmt_pnl
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     state: DashboardState = request.app.state.dashboard

@@ -31,12 +31,15 @@ function handleQuote(quote) {
     const pnl = (mark - avgCost) * qty * multiplier;
 
     const markCell = tr.querySelector('[data-col="mark"]');
-    if (markCell) markCell.textContent = mark.toFixed(2);
+    if (markCell) {
+      markCell.textContent = fmtDollar(mark);
+      markCell.className = 'mark';
+    }
 
     const pnlCell = tr.querySelector('[data-col="pnl"]');
     if (pnlCell) {
       const chip = pnlCell.querySelector('.chip') || pnlCell;
-      chip.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+      chip.textContent = fmtPnl(pnl);
       chip.className = 'chip ' + (pnl > 0 ? 'pl-positive' : pnl < 0 ? 'pl-negative' : 'neutral');
     }
   });
@@ -91,7 +94,7 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
       document.getElementById('detail-underlying').textContent  = parsed.underlying;
       document.getElementById('detail-expiry').textContent      = parsed.expiry;
       document.getElementById('detail-option-type').textContent = parsed.option_type;
-      document.getElementById('detail-strike').textContent      = '$' + parsed.strike.toFixed(2);
+      document.getElementById('detail-strike').textContent      = fmtDollar(parsed.strike);
     }
     optFields.removeAttribute('hidden');
   } else {
@@ -103,7 +106,7 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
 
   // Cost basis
   document.getElementById('detail-avg-cost').textContent =
-    avgCost != null ? '$' + parseFloat(avgCost).toFixed(2) : '—';
+    avgCost != null ? fmtDollar(parseFloat(avgCost)) : '—';
 
   // P&L (will also be updated live in updateDetailQuote)
   updateDetailPnl(symbol, qty, avgCost, quote);
@@ -117,12 +120,11 @@ function updateDetailQuote(symbol, quote) {
   if (!quote) return;
   const { last, bid, ask, ema_short, ema_long } = quote;
 
-  const fmt = v => (v != null ? v.toFixed(2) : '—');
-  document.getElementById('detail-last').textContent      = fmt(last);
-  document.getElementById('detail-bid').textContent       = fmt(bid);
-  document.getElementById('detail-ask').textContent       = fmt(ask);
-  document.getElementById('detail-ema-short').textContent = fmt(ema_short);
-  document.getElementById('detail-ema-long').textContent  = fmt(ema_long);
+  document.getElementById('detail-last').textContent      = fmtDollar(last);
+  document.getElementById('detail-bid').textContent       = fmtDollar(bid);
+  document.getElementById('detail-ask').textContent       = fmtDollar(ask);
+  document.getElementById('detail-ema-short').textContent = fmtDollar(ema_short);
+  document.getElementById('detail-ema-long').textContent  = fmtDollar(ema_long);
 }
 
 function updateDetailPnl(symbol, qty, avgCost, quote) {
@@ -136,7 +138,7 @@ function updateDetailPnl(symbol, qty, avgCost, quote) {
   const pnl = (mark - parseFloat(avgCost)) * parseInt(qty, 10) * multiplier;
 
   const el = document.getElementById('detail-open-pnl');
-  el.textContent = (pnl >= 0 ? '+' : '') + pnl.toFixed(2);
+  el.textContent = fmtPnl(pnl);
   el.className = 'detail-value detail-mono ' +
     (pnl > 0 ? 'detail-pnl-positive' : pnl < 0 ? 'detail-pnl-negative' : '');
 }
@@ -213,7 +215,7 @@ function buildRow(pos, isSubRow) {
     <td>${escapeHtml(symDisplay)}</td>
     <td>${escapeHtml(pos.instrument_type)}</td>
     <td>${escapeHtml(pos.quantity)}</td>
-    <td>${escapeHtml(pos.avg_cost)}</td>
+    <td>${fmtDollar(pos.avg_cost)}</td>
     <td class="mark neutral" data-col="mark">${mark}</td>
     <td class="pnl neutral" data-col="pnl"><span class="chip neutral">—</span></td>
     <td class="pnl neutral" data-col="total-pnl"><span class="chip neutral">—</span></td>
