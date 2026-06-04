@@ -40,7 +40,7 @@ async def _refresh(app: FastAPI) -> None:
         all_orders = await fetch_orders(token, acct)
         state.orders = [o for o in all_orders if o.get("status") in _OPEN_ORDER_STATUSES]
         await state.broadcast("account", state.get_account_summary())
-        await state.broadcast("positions", {"positions": state.positions})
+        await state.broadcast("positions", state.positions)
         await state.broadcast("orders", {"orders": state.orders})
         if hasattr(app.state, "streamer"):
             for pos in state.positions:
@@ -88,6 +88,25 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=_BASE / "static"), name="static")
 _templates = Jinja2Templates(directory=_BASE / "templates")
+
+
+def _fmt_dollar(value: object) -> str:
+    try:
+        return f"${float(str(value).replace(',', '')):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _fmt_pnl(value: object) -> str:
+    try:
+        n = float(str(value).replace(",", ""))
+        return f"{'+' if n >= 0 else '-'}${abs(n):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+_templates.env.filters["fmt_dollar"] = _fmt_dollar
+_templates.env.filters["fmt_pnl"] = _fmt_pnl
 
 
 @app.get("/", response_class=HTMLResponse)

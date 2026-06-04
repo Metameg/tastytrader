@@ -186,21 +186,19 @@ async def test_quote_feed_data_triggers_price_callback():
     """When a FEED_DATA message with a Quote event arrives, price_callback
     must be called with a PriceEvent where bid=100.0, ask=102.0,
     last=101.0 (midpoint), symbol='AAPL'."""
+    # Real DXLink FULL data format: `data` is a flat list of event objects,
+    # each tagged with its eventType (matches what the live server sends).
     feed_data_msg = json.dumps(
         {
             "type": "FEED_DATA",
             "channel": 1,
             "data": [
-                [
-                    "Quote",
-                    [
-                        {
-                            "eventSymbol": "AAPL",
-                            "bidPrice": 100.0,
-                            "askPrice": 102.0,
-                        }
-                    ],
-                ]
+                {
+                    "eventType": "Quote",
+                    "eventSymbol": "AAPL",
+                    "bidPrice": 100.0,
+                    "askPrice": 102.0,
+                }
             ],
         }
     )
@@ -241,24 +239,21 @@ async def test_quote_feed_data_triggers_price_callback():
 async def test_candle_feed_data_triggers_candle_callback():
     """When a FEED_DATA message with a Candle event arrives, candle_callback
     must be called with a dict containing OHLC fields."""
+    # Real DXLink FULL data format: flat list of event objects tagged by eventType.
     feed_data_msg = json.dumps(
         {
             "type": "FEED_DATA",
             "channel": 1,
             "data": [
-                [
-                    "Candle",
-                    [
-                        {
-                            "eventSymbol": "AAPL{=d}",
-                            "open": 150.0,
-                            "high": 155.0,
-                            "low": 148.0,
-                            "close": 153.0,
-                            "volume": 1_000_000,
-                        }
-                    ],
-                ]
+                {
+                    "eventType": "Candle",
+                    "eventSymbol": "AAPL{=d}",
+                    "open": 150.0,
+                    "high": 155.0,
+                    "low": 148.0,
+                    "close": 153.0,
+                    "volume": 1_000_000,
+                }
             ],
         }
     )
@@ -442,21 +437,18 @@ async def test_add_quote_before_connect_subscribed_on_connect():
 async def test_quote_with_zero_bid_does_not_call_callback():
     """A Quote FEED_DATA event with bidPrice=0.0 must NOT trigger price_callback.
     The implementation filters out zero/invalid bids to avoid bad price data."""
+    # Real DXLink FULL data format: flat list of event objects tagged by eventType.
     feed_data_msg = json.dumps(
         {
             "type": "FEED_DATA",
             "channel": 1,
             "data": [
-                [
-                    "Quote",
-                    [
-                        {
-                            "eventSymbol": "AAPL",
-                            "bidPrice": 0.0,
-                            "askPrice": 100.0,
-                        }
-                    ],
-                ]
+                {
+                    "eventType": "Quote",
+                    "eventSymbol": "AAPL",
+                    "bidPrice": 0.0,
+                    "askPrice": 100.0,
+                }
             ],
         }
     )

@@ -9,9 +9,9 @@
 
   /* text */
   --text:          #dde1ea;
-  --text-dim:      #8892a4;
-  --text-muted:    #505a6e;
-  --text-faint:    #323a48;
+  --text-dim:      #b0bbc8;
+  --text-muted:    #8892a4;
+  --text-faint:    #505a6e;
 
   /* borders */
   --border:        #1e2432;
@@ -59,7 +59,7 @@
   --r-md: 6px;
 
   /* layout */
-  --topbar-h:    48px;
+  --topbar-h:    60px;
   --entrybar-h:  60px;
   --holdings-w:  168px;
   --row-h:       28px;        /* desktop table row */

@@ -1,7 +1,27 @@
 from __future__ import annotations
+from datetime import datetime, timezone, timedelta
+
 import httpx
 
 BASE_URL = "https://api.cert.tastyworks.com"
+
+try:
+    from zoneinfo import ZoneInfo
+    _CENTRAL_TZ = ZoneInfo("America/Chicago")
+except Exception:
+    _CENTRAL_TZ = timezone(timedelta(hours=-5))  # CDT fallback
+
+
+def _fmt_order_time(received: str) -> str:
+    if not received:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(received.replace("Z", "+00:00"))
+        ct = dt.astimezone(_CENTRAL_TZ)
+        h, m = ct.hour, ct.minute
+        return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'} CT"
+    except Exception:
+        return received[11:19] if len(received) >= 19 else received
 
 
 async def fetch_balance(
@@ -81,8 +101,7 @@ async def fetch_orders(
         for item in items:
             legs = item.get("legs", [{}])
             leg = legs[0] if legs else {}
-            received = item.get("received-at", "")
-            time_str = received[11:19] if len(received) >= 19 else received
+            time_str = _fmt_order_time(item.get("received-at", ""))
             result.append({
                 "id": item.get("id"),
                 "symbol": item.get("underlying-symbol", leg.get("symbol", "—")),
@@ -116,17 +135,19 @@ async def place_order(
             {
                 "instrument-type": instrument_type,
                 "symbol": symbol,
-                "quantity": quantity,
+                "quantity": str(quantity),
                 "action": action,
             }
         ],
     }
+    print(f"[order] POST /orders body: {body}")
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{base_url}/accounts/{account_number}/orders",
             json=body,
             headers={"Authorization": session_token},
         )
+        print(f"[order] response {resp.status_code}: {resp.text}")
         resp.raise_for_status()
         return resp.json()["data"]["order"]["id"]
 

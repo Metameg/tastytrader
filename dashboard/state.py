@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from src.models import PriceEvent
 from src.strategy import EMACalculator
@@ -48,8 +49,12 @@ class DashboardState:
     def on_quote(self, price_event: PriceEvent) -> None:
         s = price_event.symbol
         if s not in self._ema_short:
-            self._ema_short[s] = EMACalculator(10)
-            self._ema_long[s] = EMACalculator(20)
+            ema_short = EMACalculator(10)
+            ema_long = EMACalculator(20)
+            ema_short.seed(price_event.last)
+            ema_long.seed(price_event.last)
+            self._ema_short[s] = ema_short
+            self._ema_long[s] = ema_long
         ema_s = self._ema_short[s].update(price_event.last)
         ema_l = self._ema_long[s].update(price_event.last)
         self.quotes[s] = {
@@ -61,11 +66,13 @@ class DashboardState:
             "ema_long": ema_l,
         }
         payload = {"event": "quote", "data": self.quotes[s]}
+        n = len(self.subscribers)
+        print(f"[SSE] quote for {s} → broadcasting to {n} subscriber(s)")
         for q in self.subscribers:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
-                pass
+                print(f"[SSE] queue full — dropping quote for {s}")
 
     def on_candle(self, ohlc: dict) -> None:
         payload = {"event": "candle", "data": ohlc}
@@ -115,3 +122,35 @@ class DashboardState:
                     continue
                 multiplier = 100 if pos.get("instrument_type") == "Equity Option" else 1
                 pos["pl"] = (price - avg_cost) * pos["quantity"] * multiplier
+
+
+def parse_occ(symbol: str) -> dict | None:
+    """Parse an OCC option symbol into its components.
+
+    OCC format: 6-char underlying (right-padded) + YYMMDD + C/P + 8-digit strike*1000
+    Example: 'AAPL  240119C00150000' → underlying=AAPL, expiry=Jan 19 2024,
+             option_type=Call, strike=150.0
+
+    Returns None if the symbol does not match the OCC format.
+    """
+    m = re.fullmatch(r"([A-Z ]{6})(\d{6})([CP])(\d{8})", symbol)
+    if not m:
+        return None
+    underlying = m.group(1).strip()
+    if not underlying:
+        return None
+    date_str = m.group(2)
+    opt_char = m.group(3)
+    strike_raw = m.group(4)
+
+    try:
+        expiry_dt = datetime.strptime(date_str, "%y%m%d")
+    except ValueError:
+        return None
+
+    return {
+        "underlying": underlying,
+        "expiry": expiry_dt.strftime("%b %-d %Y"),
+        "option_type": "Call" if opt_char == "C" else "Put",
+        "strike": int(strike_raw) / 1000,
+    }

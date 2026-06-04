@@ -222,9 +222,10 @@ def test_broadcast_to_multiple_subscribers():
     assert queue_b.get_nowait()["data"]["symbol"] == "TSLA"
 
 
-def test_on_quote_ema_short_none_before_warmup():
-    """ema_short must be None until 10 quotes have been processed (EMA warmup period).
-    The 9th quote is still below the period=10 threshold, so ema_short stays None."""
+def test_on_quote_ema_short_seeded_from_first_tick():
+    """ema_short must be non-None from the very first quote because DashboardState
+    seeds each new EMACalculator with the first observed price so the detail panel
+    always has a value to display."""
     state = DashboardState()
 
     for i in range(8):
@@ -235,14 +236,15 @@ def test_on_quote_ema_short_none_before_warmup():
     state.on_quote(PriceEvent(symbol="AAPL", last=108.0, bid=99.0, ask=101.0, timestamp=8.0))
 
     item = last_queue.get_nowait()
-    assert item["data"]["ema_short"] is None, (
-        f"ema_short should be None before 10 quotes (period=10 warmup); got {item['data']['ema_short']}"
+    assert isinstance(item["data"]["ema_short"], float), (
+        f"ema_short should be a float on every tick (seeded from first price); got {item['data']['ema_short']}"
     )
 
 
-def test_on_quote_ema_long_none_before_20_warmup():
-    """After 15 quotes, ema_short (period=10) is populated but ema_long (period=20)
-    is still None — it requires 20 quotes to warm up."""
+def test_on_quote_both_emas_seeded_from_first_tick():
+    """Both ema_short and ema_long must be non-None from the first quote onward.
+    DashboardState seeds each new EMACalculator with the first observed price,
+    so neither EMA goes through a None warm-up phase for display purposes."""
     state = DashboardState()
 
     for i in range(14):
@@ -253,11 +255,11 @@ def test_on_quote_ema_long_none_before_20_warmup():
     state.on_quote(PriceEvent(symbol="AAPL", last=114.0, bid=99.0, ask=101.0, timestamp=14.0))
 
     item = last_queue.get_nowait()
-    assert item["data"]["ema_short"] is not None, (
-        "ema_short should be populated after 15 quotes (period=10 warmup complete)"
+    assert isinstance(item["data"]["ema_short"], float), (
+        "ema_short should be a float on every tick (seeded from first price)"
     )
-    assert item["data"]["ema_long"] is None, (
-        f"ema_long should still be None after only 15 quotes; got {item['data']['ema_long']}"
+    assert isinstance(item["data"]["ema_long"], float), (
+        f"ema_long should be a float on every tick (seeded from first price); got {item['data']['ema_long']}"
     )
 
 
@@ -424,7 +426,7 @@ async def test_place_order_builds_correct_body_for_equity():
     leg = body["legs"][0]
     assert leg["instrument-type"] == "Equity"
     assert leg["symbol"] == "AAPL"
-    assert leg["quantity"] == 5
+    assert leg["quantity"] == "5"
     assert leg["action"] == "Buy to Open"
 
 
@@ -454,7 +456,7 @@ async def test_place_order_builds_correct_body_for_equity_option():
     leg = kwargs["json"]["legs"][0]
     assert leg["instrument-type"] == "Equity Option"
     assert leg["symbol"] == "AAPL  260117C00150000"
-    assert leg["quantity"] == 1
+    assert leg["quantity"] == "1"
     assert leg["action"] == "Sell to Close"
 
 
@@ -636,7 +638,7 @@ async def test_place_order_puts_quantity_value_into_leg():
         )
 
     _, kwargs = mock_client.post.call_args
-    assert kwargs["json"]["legs"][0]["quantity"] == 7
+    assert kwargs["json"]["legs"][0]["quantity"] == "7"
 
 
 async def test_place_order_raises_on_non_2xx_response():
@@ -975,6 +977,29 @@ async def test_broadcast_multiple_events_reach_all_subscribers():
     assert not q2.empty()
 
 
+# --- Issue #6: contract — positions SSE event data shape ---
+
+async def test_positions_sse_event_data_is_a_list():
+    """The JS handlePositions() calls .filter() directly on the argument, so the
+    'positions' SSE event data must be a plain list, not a wrapped dict like
+    {"positions": [...]}.  _refresh must broadcast the list directly."""
+    from unittest.mock import AsyncMock, patch
+
+    state = DashboardState()
+    queue = await state.add_subscriber()
+
+    # Simulate what _refresh does after the fix: broadcast("positions", state.positions)
+    await state.broadcast("positions", [{"symbol": "AAPL"}])
+
+    item = queue.get_nowait()
+    assert item["event"] == "positions"
+    # data must be the list itself, not a dict wrapping it
+    assert isinstance(item["data"], list), (
+        f"positions SSE event data must be a list for handlePositions() to call "
+        f".filter() on it; got {type(item['data'])!r} — fix _refresh broadcast in app.py"
+    )
+
+
 # --- Issue #5: fetch_positions includes current_price field ---
 
 async def test_fetch_positions_includes_current_price_field():
@@ -1000,3 +1025,151 @@ async def test_fetch_positions_includes_current_price_field():
         positions = await fetch_positions(session_token="tok", account_number="5WX78966")
 
     assert "current_price" in positions[0]
+
+
+# --- Issue #6: parse_occ (OCC symbol parser) ---
+
+def test_parse_occ_call_aapl():
+    """AAPL call option: underlying trimmed, expiry human-readable, type=Call, strike as float."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C00150000")
+    assert result == {
+        "underlying": "AAPL",
+        "expiry": "Jan 19 2024",
+        "option_type": "Call",
+        "strike": 150.0,
+    }
+
+
+def test_parse_occ_put_aapl():
+    """AAPL put option: option_type must be 'Put' when symbol contains 'P'."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119P00150000")
+    assert result == {
+        "underlying": "AAPL",
+        "expiry": "Jan 19 2024",
+        "option_type": "Put",
+        "strike": 150.0,
+    }
+
+
+def test_parse_occ_call_spy():
+    """SPY call: 3-char underlying right-padded to 6 chars in the symbol string."""
+    from dashboard.state import parse_occ
+    result = parse_occ("SPY   240119C00450000")
+    assert result == {
+        "underlying": "SPY",
+        "expiry": "Jan 19 2024",
+        "option_type": "Call",
+        "strike": 450.0,
+    }
+
+
+def test_parse_occ_underlying_shorter_than_6_chars_qqq():
+    """QQQ has an underlying shorter than 6 chars — spaces must be stripped correctly."""
+    from dashboard.state import parse_occ
+    result = parse_occ("QQQ   240119C00400000")
+    assert result is not None
+    assert result["underlying"] == "QQQ"
+    assert result["option_type"] == "Call"
+    assert result["strike"] == 400.0
+
+
+def test_parse_occ_equity_symbol_returns_none():
+    """Plain equity ticker like 'AAPL' (no date/type/strike) must return None."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL")
+    assert result is None
+
+
+def test_parse_occ_fractional_strike_price():
+    """Strike 00250050 encodes $250.05 — fractional cents must parse correctly."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C00250050")
+    assert result is not None
+    assert result["strike"] == pytest.approx(250.05)
+
+
+def test_parse_occ_rejects_symbol_longer_than_21_chars():
+    """22-char string must not match — fullmatch anchors both ends."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C001500000")  # 22 chars
+    assert result is None
+
+
+def test_parse_occ_rejects_lowercase_underlying():
+    """Regex [A-Z ] requires uppercase — lowercase underlying must return None."""
+    from dashboard.state import parse_occ
+    result = parse_occ("aapl  240119C00150000")
+    assert result is None
+
+
+def test_parse_occ_rejects_invalid_date():
+    """Month 13 is not a valid date — strptime must reject it and return None."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  991399C00150000")
+    assert result is None
+
+
+def test_parse_occ_zero_strike_is_valid():
+    """Strike encoded as 00000000 is $0.00 — zero is a valid (if unusual) strike."""
+    from dashboard.state import parse_occ
+    result = parse_occ("AAPL  240119C00000000")
+    assert result is not None
+    assert result["strike"] == pytest.approx(0.0)
+    assert result["underlying"] == "AAPL"
+    assert result["option_type"] == "Call"
+
+
+def test_parse_occ_single_char_underlying():
+    """Underlying 'S' padded to 6 chars — stripping spaces must yield 'S'."""
+    from dashboard.state import parse_occ
+    result = parse_occ("S     240119C00050000")
+    assert result is not None
+    assert result["underlying"] == "S"
+    assert result["strike"] == pytest.approx(50.0)
+    assert result["option_type"] == "Call"
+
+
+def test_parse_occ_whitespace_only_underlying_returns_none():
+    """Six spaces with no letter chars — underlying strips to '' which is invalid.
+    Must return None so the detail panel never displays an empty ticker."""
+    from dashboard.state import parse_occ
+    result = parse_occ("      240119C00150000")
+    assert result is None
+
+
+# --- Issue #6: on_quote stores all keys required by the detail panel ---
+
+def test_on_quote_quote_dict_has_required_detail_panel_keys():
+    """state.quotes[symbol] must contain all keys the detail panel JS reads,
+    including ema_short and ema_long (even when still None during warm-up)."""
+    state = DashboardState()
+    event = PriceEvent(symbol="AAPL", last=150.0, bid=149.5, ask=150.5, timestamp=1.0)
+    state.on_quote(event)
+    q = state.quotes["AAPL"]
+    for key in ("symbol", "last", "bid", "ask", "ema_short", "ema_long"):
+        assert key in q, f"Missing key '{key}' in quotes dict"
+
+
+def test_on_quote_ema_keys_are_floats_from_first_tick():
+    """Both EMA keys must hold a float from the very first tick.
+    DashboardState seeds each new EMACalculator with the first price so the
+    detail panel never shows a dash due to a warm-up gap."""
+    state = DashboardState()
+    event = PriceEvent(symbol="AAPL", last=150.0, bid=149.5, ask=150.5, timestamp=1.0)
+    state.on_quote(event)
+    q = state.quotes["AAPL"]
+    assert isinstance(q["ema_short"], float)
+    assert isinstance(q["ema_long"], float)
+
+
+def test_on_quote_ema_short_populated_after_warmup():
+    """After 10 ticks both EMAs are floats; ema_long is seeded from tick 1 and has
+    been converging for 10 ticks by this point."""
+    state = DashboardState()
+    for i in range(10):
+        state.on_quote(PriceEvent(symbol="AAPL", last=float(100 + i), bid=99.0, ask=101.0, timestamp=float(i)))
+    q = state.quotes["AAPL"]
+    assert isinstance(q["ema_short"], float)
+    assert isinstance(q["ema_long"], float)

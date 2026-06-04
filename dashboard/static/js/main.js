@@ -1,3 +1,18 @@
+/* ── Dollar formatting utilities (global) ─────────── */
+window.fmtDollar = function (v) {
+  if (v == null || v === '—') return '—';
+  var n = parseFloat(String(v).replace(/,/g, ''));
+  if (isNaN(n)) return v === '—' ? '—' : String(v);
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+window.fmtPnl = function (v) {
+  if (v == null) return '—';
+  var n = parseFloat(String(v).replace(/,/g, ''));
+  if (isNaN(n)) return '—';
+  return (n >= 0 ? '+$' : '-$') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
 (function () {
   'use strict';
 
@@ -105,52 +120,38 @@
     if (statusDot) { statusDot.className = 'status-dot disconnected'; statusDot.title = 'disconnected'; }
   };
 
-  /* quote: update mark price for a symbol row */
-  es.addEventListener('quote', function (e) {
-    var data = JSON.parse(e.data);
-    var row = document.querySelector('#positions-table [data-symbol="' + CSS.escape(data.symbol) + '"]');
-    if (!row) return;
-    var cells = row.querySelectorAll('td');
-    if (cells[4]) {
-      cells[4].textContent = data.last != null ? data.last.toFixed(2) : '—';
-      cells[4].className = 'neutral';
-    }
-  });
+  /* NOTE: quote handling lives entirely in dashboard.js (mark cell, P&L cell,
+     and the detail panel). main.js intentionally does not listen for 'quote'
+     so the two SSE consumers don't both write the same mark cell. */
 
   /* account: update topbar stats */
   es.addEventListener('account', function (e) {
     var data = JSON.parse(e.data);
     setText('.header-account', data.account_number);
-    setText('.header-nlv', data.net_liquidating_value);
-    setText('.header-bp', data.buying_power);
+    setText('.header-nlv', fmtDollar(data.net_liquidating_value));
+    setText('.header-bp', fmtDollar(data.buying_power));
   });
 
-  /* positions: re-render positions table body + holdings sidebar */
+  /* positions: maintain holdings sidebar + order-form symbol suggestions.
+     NOTE: dashboard.js is the sole owner of the #positions-table rebuild
+     (it handles option grouping, live marks, and detail-panel reselection).
+     main.js must NOT touch that <tbody> or the two SSE consumers fight over
+     it and the table flickers blank. The backend broadcasts a raw array;
+     tolerate the legacy {positions:[...]} shape too. */
   es.addEventListener('positions', function (e) {
     var data = JSON.parse(e.data);
-    var tbody = document.querySelector('#positions-table tbody');
-    if (!tbody) return;
-
-    if (!data.positions || data.positions.length === 0) {
-      tbody.innerHTML = '<tr class="empty-row"><td colspan="7">no positions</td></tr>';
-      renderHoldings([]);
-      return;
-    }
-
-    tbody.innerHTML = data.positions.map(function (pos) {
-      return '<tr data-symbol="' + esc(pos.symbol) + '">' +
-        '<td class="col-left symbol-cell">' + esc(pos.symbol) + '</td>' +
-        '<td class="col-dim">' + esc(pos.instrument_type || '—') + '</td>' +
-        '<td>' + (pos.quantity != null ? pos.quantity : '—') + '</td>' +
-        '<td>' + esc(pos.avg_cost || '—') + '</td>' +
-        '<td class="neutral">—</td>' +
-        '<td class="neutral">—</td>' +
-        '<td class="neutral">—</td>' +
-        '</tr>';
-    }).join('');
-
-    renderHoldings(data.positions);
+    var positions = Array.isArray(data) ? data : (data.positions || []);
+    renderHoldings(positions);
+    updateSymbolSuggestions(positions);
   });
+
+  function updateSymbolSuggestions(positions) {
+    var dl = document.getElementById('symbol-suggestions');
+    if (!dl) return;
+    dl.innerHTML = (positions || []).map(function (p) {
+      return '<option value="' + esc(p.symbol) + '">';
+    }).join('');
+  }
 
   function renderHoldings(positions) {
     var list = document.getElementById('holdings-list');
@@ -191,14 +192,16 @@
       var cancelCell = (cancelable[o.status] && o.id)
         ? '<button class="cancel-btn" data-order-id="' + esc(o.id) + '" aria-label="Cancel order ' + esc(o.id) + '">✕</button>'
         : '';
+      var isBuy = (o.action || '').startsWith('Buy');
+      var sideClass = isBuy ? 'buy-action' : 'sell-action';
       return '<tr data-order-id="' + esc(o.id) + '">' +
         '<td class="col-left symbol-cell">' + esc(o.symbol) + '</td>' +
-        '<td class="col-dim">' + esc(o.action) + '</td>' +
+        '<td class="col-dim ' + sideClass + '">' + esc(o.action) + '</td>' +
         '<td class="col-dim">' + esc(o.order_type) + '</td>' +
         '<td>' + (o.quantity != null ? o.quantity : '—') + '</td>' +
-        '<td>' + esc(o.price) + '</td>' +
+        '<td class="' + sideClass + '">' + fmtDollar(o.price) + '</td>' +
         '<td class="col-left"><span class="status-chip ' + chipClass + '">' + esc(o.status) + '</span></td>' +
-        '<td class="col-dim">' + esc(o.time) + '</td>' +
+        '<td>' + esc(o.time) + '</td>' +
         '<td class="col-end">' + cancelCell + '</td>' +
         '</tr>';
     }).join('');
