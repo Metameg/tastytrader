@@ -434,6 +434,56 @@ async def test_add_quote_before_connect_subscribed_on_connect():
 # ---------------------------------------------------------------------------
 
 @_require_import
+async def test_candle_subscription_from_time_is_integer():
+    """add_candle('AAPL', from_time=1234567890.5) must send a FEED_SUBSCRIPTION
+    with a 'fromTime' field whose value is an INTEGER (int(from_time)) per the
+    FEED_SUBSCRIPTION protocol.  A float would be rejected by the DXLink server."""
+    ws = _make_mock_ws()
+    _handshake_responses(ws, [])
+
+    price_cb = AsyncMock()
+    candle_cb = AsyncMock()
+
+    from_time_float = 1_234_567_890.5  # deliberate float to test int() coercion
+
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=price_cb,
+        candle_callback=candle_cb,
+    )
+    streamer.add_candle("AAPL", from_time=from_time_float)
+
+    cm = _make_connected_context(ws)
+    with patch("dashboard.streamer.websockets.connect", return_value=cm):
+        try:
+            await streamer._connect_and_stream()
+        except (StopAsyncIteration, Exception):
+            pass
+
+    sent_payloads = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+    feed_sub_msgs = [p for p in sent_payloads if p.get("type") == "FEED_SUBSCRIPTION"]
+    assert feed_sub_msgs, "Expected at least one FEED_SUBSCRIPTION message"
+
+    added = [item for msg in feed_sub_msgs for item in msg.get("add", [])]
+    candle_entries = [item for item in added if item.get("type") == "Candle"]
+    assert candle_entries, f"Expected at least one Candle entry in FEED_SUBSCRIPTION; got: {added}"
+
+    candle_entry = candle_entries[0]
+    assert "fromTime" in candle_entry, (
+        f"Candle FEED_SUBSCRIPTION entry must include 'fromTime'; got keys: {list(candle_entry.keys())}"
+    )
+    from_time_val = candle_entry["fromTime"]
+    assert isinstance(from_time_val, int), (
+        f"fromTime must be an int (not {type(from_time_val).__name__}); "
+        f"DXLink protocol requires integer milliseconds/seconds"
+    )
+    assert from_time_val == int(from_time_float), (
+        f"fromTime value {from_time_val} must equal int({from_time_float}) = {int(from_time_float)}"
+    )
+
+
+@_require_import
 async def test_quote_with_zero_bid_does_not_call_callback():
     """A Quote FEED_DATA event with bidPrice=0.0 must NOT trigger price_callback.
     The implementation filters out zero/invalid bids to avoid bad price data."""

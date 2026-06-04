@@ -1173,3 +1173,173 @@ def test_on_quote_ema_short_populated_after_warmup():
     q = state.quotes["AAPL"]
     assert isinstance(q["ema_short"], float)
     assert isinstance(q["ema_long"], float)
+
+
+# --- Issue #7: DashboardState.on_candle accumulates history ---
+
+def test_on_candle_accumulates_candles_for_symbol():
+    """on_candle must store candle dicts so get_chart_data can return them.
+    A candle with eventSymbol 'AAPL{=d}' must be stored under the plain key 'AAPL'."""
+    state = DashboardState()
+    candle = {
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0,
+        "high": 155.0,
+        "low": 148.0,
+        "close": 153.0,
+        "volume": 1_000_000,
+    }
+    state.on_candle(candle)
+
+    data = state.get_chart_data("AAPL")
+    assert len(data["close"]) == 1
+    assert data["close"][0] == 153.0
+
+
+def test_on_candle_normalizes_dxfeed_suffix_to_plain_symbol():
+    """eventSymbol 'AAPL{=d}' must be stored under plain key 'AAPL'
+    because clients fetch /api/chart/AAPL (no suffix)."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+
+    # Must be retrievable under the plain symbol
+    data = state.get_chart_data("AAPL")
+    assert data["close"] != [], "Expected candle stored under plain symbol AAPL"
+
+    # Must NOT be stored under the suffixed symbol
+    data_suffixed = state.get_chart_data("AAPL{=d}")
+    assert data_suffixed["close"] == [], "Suffixed symbol 'AAPL{=d}' must not be a valid key"
+
+
+def test_on_candle_still_broadcasts_candle_event():
+    """on_candle must continue to broadcast a 'candle' SSE event to subscribers
+    so existing real-time behaviour is preserved."""
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    candle = {
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    }
+    state.on_candle(candle)
+
+    assert not queue.empty(), "Subscriber queue must receive a 'candle' event"
+    item = queue.get_nowait()
+    assert item["event"] == "candle"
+
+
+def test_on_candle_accumulates_multiple_candles_in_order():
+    """Multiple on_candle calls must accumulate all candles; get_chart_data returns
+    close prices in the order they were appended."""
+    state = DashboardState()
+    closes = [100.0, 101.0, 102.0, 103.0]
+    for i, close_price in enumerate(closes):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1,
+            "high": close_price + 1,
+            "low": close_price - 2,
+            "close": close_price,
+            "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert data["close"] == closes
+
+
+# --- Issue #7: DashboardState.get_chart_data ---
+
+def test_get_chart_data_unknown_symbol_returns_empty_arrays():
+    """Unknown symbol with no candles must return empty arrays for all keys.
+    This allows the route to signal 'hide the chart' to the frontend."""
+    state = DashboardState()
+    data = state.get_chart_data("UNKNOWN")
+    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+
+
+def test_get_chart_data_returns_required_keys():
+    """get_chart_data must return a dict with exactly the keys labels, close,
+    ema_short, ema_long (the shape the frontend Chart.js code expects)."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    for key in ("labels", "close", "ema_short", "ema_long"):
+        assert key in data, f"Missing key '{key}' in get_chart_data result"
+
+
+def test_get_chart_data_close_matches_stored_close_prices():
+    """The 'close' array in get_chart_data must equal the close prices fed via
+    on_candle in chronological order."""
+    state = DashboardState()
+    closes = [148.0, 150.0, 152.0, 151.0, 153.0]
+    for close_price in closes:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert data["close"] == closes
+
+
+def test_get_chart_data_ema_arrays_same_length_as_close():
+    """ema_short and ema_long arrays must have one value per close price so the
+    Chart.js dataset aligns with the labels/close arrays."""
+    state = DashboardState()
+    closes = [float(100 + i) for i in range(25)]
+    for close_price in closes:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert len(data["ema_short"]) == len(closes), (
+        f"ema_short length {len(data['ema_short'])} must equal close length {len(closes)}"
+    )
+    assert len(data["ema_long"]) == len(closes), (
+        f"ema_long length {len(data['ema_long'])} must equal close length {len(closes)}"
+    )
+
+
+def test_get_chart_data_ema_final_value_matches_ema_calculator():
+    """The final ema_short and ema_long values must match an independently-computed
+    EMACalculator over the same close sequence (short period=10, long period=20).
+    This pins the computation to real EMACalculator behaviour, not a reimplementation."""
+    from src.strategy import EMACalculator
+
+    state = DashboardState()
+    closes = [float(100 + i) for i in range(30)]
+    for close_price in closes:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+
+    # Independently compute expected final EMA values
+    ema_short_ref = EMACalculator(10)
+    ema_long_ref = EMACalculator(20)
+    for c in closes:
+        ema_short_ref.update(c)
+        ema_long_ref.update(c)
+
+    assert data["ema_short"][-1] == pytest.approx(ema_short_ref.value), (
+        f"ema_short final value {data['ema_short'][-1]} does not match EMACalculator(10) "
+        f"expected {ema_short_ref.value}"
+    )
+    assert data["ema_long"][-1] == pytest.approx(ema_long_ref.value), (
+        f"ema_long final value {data['ema_long'][-1]} does not match EMACalculator(20) "
+        f"expected {ema_long_ref.value}"
+    )

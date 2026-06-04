@@ -663,6 +663,76 @@ def test_get_quote_response_contains_all_six_required_keys(client):
 
 # --- Issue #6: _refresh positions SSE broadcast shape ---
 
+# --- Issue #7: GET /api/chart/{symbol} ---
+
+def test_get_chart_returns_200_when_candle_data_exists(client):
+    """Route must return 200 with chart data when candle history exists for symbol."""
+    from dashboard.app import app
+    # Seed candle history directly via on_candle so the state has data
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL")
+    # Clean up
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL", None)
+
+    assert response.status_code == 200
+
+
+def test_get_chart_returns_required_keys_when_data_exists(client):
+    """Route response must contain labels, close, ema_short, ema_long keys."""
+    from dashboard.app import app
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL", None)
+
+    data = response.json()
+    for key in ("labels", "close", "ema_short", "ema_long"):
+        assert key in data, f"Missing key '{key}' in /api/chart/AAPL response"
+
+
+def test_get_chart_close_reflects_stored_closes(client):
+    """The 'close' array in the route response must equal the accumulated close prices."""
+    from dashboard.app import app
+    # Ensure clean state for this symbol
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("TSLA", None)
+
+    closes = [200.0, 201.0, 202.0]
+    for close_price in closes:
+        app.state.dashboard.on_candle({
+            "eventSymbol": "TSLA{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 500_000,
+        })
+
+    response = client.get("/api/chart/TSLA")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("TSLA", None)
+
+    data = response.json()
+    assert data["close"] == closes, (
+        f"Expected close={closes} in response; got {data.get('close')}"
+    )
+
+
+def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
+    """Unknown symbol with no candle data must return 200 with empty arrays
+    (NOT 404, NOT an error) so the frontend can hide the chart silently."""
+    response = client.get("/api/chart/UNKNOWN_SYMBOL_XYZ")
+    assert response.status_code == 200
+    data = response.json()
+    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}, (
+        f"Expected empty-array dict for unknown symbol; got {data}"
+    )
+
+
 def test_refresh_broadcasts_positions_as_list(client):
     """_refresh must broadcast the positions list directly (not wrapped in a dict)
     because JS handlePositions() calls .filter() on the received value.
