@@ -264,6 +264,20 @@ document.addEventListener('click', e => {
     .catch(() => {
       populateDetailPanel(symbol, instrumentType, qty, avgCost, null);
     });
+
+  // Fetch chart data — hide chart area if no candle data yet (no error shown)
+  const chartArea = document.getElementById('detail-chart-area');
+  if (chartArea) chartArea.classList.add('detail-chart-hidden');
+
+  fetch('/api/chart/' + encodeURIComponent(symbol))
+    .then(r => r.json())
+    .then(data => {
+      if (data.close && data.close.length > 0 && typeof window.updateChart === 'function') {
+        window.updateChart(data.labels, data.close, data.ema_short, data.ema_long);
+      }
+      // If arrays are empty, chart area stays hidden — no error
+    });
+    // No .catch() — network errors silently leave chart hidden
 });
 
 connect();
