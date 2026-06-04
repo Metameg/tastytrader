@@ -102,6 +102,15 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
     optFields.setAttribute('hidden', '');
   }
 
+  // Greeks section (only shown for Equity Option rows; populated async below)
+  const greeksSection = document.getElementById('detail-greeks-section');
+  if (instrumentType === 'Equity Option') {
+    greeksSection.removeAttribute('hidden');
+  } else {
+    greeksSection.setAttribute('hidden', '');
+    populateGreeks({ delta: '—', gamma: '—', theta: '—', vega: '—', iv: '—' });
+  }
+
   // Live quote fields (may be null on first populate before warm-up)
   updateDetailQuote(symbol, quote);
 
@@ -115,6 +124,14 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
   // Show content, hide empty state
   empty.setAttribute('hidden', '');
   content.removeAttribute('hidden');
+}
+
+function populateGreeks(data) {
+  document.getElementById('detail-delta').textContent = data.delta ?? '—';
+  document.getElementById('detail-gamma').textContent = data.gamma ?? '—';
+  document.getElementById('detail-theta').textContent = data.theta ?? '—';
+  document.getElementById('detail-vega').textContent  = data.vega  ?? '—';
+  document.getElementById('detail-iv').textContent    = data.iv    ?? '—';
 }
 
 function updateDetailQuote(symbol, quote) {
@@ -264,6 +281,18 @@ document.addEventListener('click', e => {
     .catch(() => {
       populateDetailPanel(symbol, instrumentType, qty, avgCost, null);
     });
+
+  // Fetch greeks for option rows only
+  if (instrumentType === 'Equity Option') {
+    fetch(`/api/greeks/${encodeURIComponent(symbol)}`)
+      .then(r => r.json())
+      .then(data => {
+        populateGreeks(data);
+      })
+      .catch(() => {
+        populateGreeks({ delta: '—', gamma: '—', theta: '—', vega: '—', iv: '—' });
+      });
+  }
 });
 
 connect();
