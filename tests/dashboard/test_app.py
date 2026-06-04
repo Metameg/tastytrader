@@ -725,7 +725,7 @@ def test_get_chart_close_reflects_stored_closes(client):
 def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
     """Unknown symbol with no candle data must return 200 with empty arrays
     (NOT 404, NOT an error) so the frontend can hide the chart silently."""
-    response = client.get("/api/chart/UNKNOWN_SYMBOL_XYZ")
+    response = client.get("/api/chart/UNKNWN")
     assert response.status_code == 200
     data = response.json()
     assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}, (
@@ -738,7 +738,7 @@ def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
 def test_get_chart_returns_four_keys_for_unknown_symbol(client):
     """All four chart keys must be present even for a symbol with no history.
     The frontend always destructures {labels, close, ema_short, ema_long}."""
-    response = client.get("/api/chart/TOTALLY_UNKNOWN_SYM_XYZQ")
+    response = client.get("/api/chart/UNKWNSYM")
     assert response.status_code == 200
     data = response.json()
     for key in ("labels", "close", "ema_short", "ema_long"):
@@ -894,3 +894,49 @@ def test_get_chart_http_response_candle_event_uses_real_feed_key_names(client):
     assert len(data["labels"]) == 1, (
         "labels must contain one entry (position index 0) when 'time' is absent from event"
     )
+
+
+# --- FIX 1 (security M1): validate symbol path param in GET /api/chart/{symbol} ---
+
+def test_get_chart_rejects_symbol_exceeding_15_chars(client):
+    """A symbol longer than 15 characters must return 400 — invalid symbol."""
+    response = client.get("/api/chart/AVERYLONGSYMBOLNAME12345")
+    assert response.status_code == 400
+    data = response.json()
+    assert data.get("error") == "invalid symbol"
+
+
+def test_get_chart_rejects_symbol_with_curly_brace(client):
+    """A symbol containing '{' must return 400 — DXLink injection defence."""
+    response = client.get("/api/chart/AAPL%7B%3Dd%7D")
+    assert response.status_code == 400
+    data = response.json()
+    assert data.get("error") == "invalid symbol"
+
+
+def test_get_chart_rejects_symbol_with_slash(client):
+    """A symbol containing '/' must not return 200 — FastAPI rejects it at the router
+    level (404 path-not-found) before the validator even runs, which is equally safe."""
+    # URL-encode the slash; the router splits the path and returns 404
+    response = client.get("/api/chart/AA%2FPL")
+    assert response.status_code != 200
+
+
+def test_get_chart_rejects_symbol_with_space(client):
+    """A symbol containing a space must return 400."""
+    response = client.get("/api/chart/AA%20PL")
+    assert response.status_code == 400
+    data = response.json()
+    assert data.get("error") == "invalid symbol"
+
+
+def test_get_chart_accepts_valid_equity_symbol(client):
+    """Plain equity symbol AAPL must be accepted (not return 400)."""
+    response = client.get("/api/chart/AAPL")
+    assert response.status_code == 200
+
+
+def test_get_chart_accepts_dotted_symbol(client):
+    """BRK.B (contains dot) must be accepted — dot is in the allowed charset."""
+    response = client.get("/api/chart/BRK.B")
+    assert response.status_code == 200

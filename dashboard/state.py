@@ -75,12 +75,18 @@ class DashboardState:
             except asyncio.QueueFull:
                 print(f"[SSE] queue full — dropping quote for {s}")
 
+    _MAX_CANDLES: int = 90
+
     def on_candle(self, ohlc: dict) -> None:
         # Normalize eventSymbol: strip {=d} suffix to get plain symbol
         raw_sym: str = ohlc.get("eventSymbol", "")
         plain_sym = raw_sym.split("{")[0] if "{" in raw_sym else raw_sym
         if plain_sym:
-            self.candles.setdefault(plain_sym, []).append(ohlc)
+            bucket = self.candles.setdefault(plain_sym, [])
+            bucket.append(ohlc)
+            # Cap history to the most recent _MAX_CANDLES entries to bound memory usage
+            if len(bucket) > self._MAX_CANDLES:
+                del bucket[: len(bucket) - self._MAX_CANDLES]
         # Existing broadcast (must not regress)
         payload = {"event": "candle", "data": ohlc}
         for q in self.subscribers:

@@ -1651,3 +1651,48 @@ def test_get_chart_data_labels_are_indices_when_candles_have_no_time_field():
         f"got {data['labels']}"
     )
     assert data["close"] == [100.0, 101.0, 102.0]
+
+
+# --- FIX 2 (security M2): bound per-symbol candle history to 90 entries ---
+
+def test_on_candle_caps_history_at_90_entries():
+    """After accumulating more than 90 candles for a symbol, get_chart_data must
+    return at most 90 closes (the most recent ones, in time order)."""
+    state = DashboardState()
+    # Feed 100 candles with increasing time and close values
+    for i in range(100):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "open": float(100 + i), "high": float(102 + i),
+            "low": float(98 + i), "close": float(100 + i),
+            "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert len(data["close"]) <= 90, (
+        f"get_chart_data must return at most 90 closes; got {len(data['close'])}"
+    )
+
+
+def test_on_candle_caps_history_keeps_most_recent_entries():
+    """When capped at 90, the returned closes must be the last 90 fed (highest time
+    values), not the first 90.  Confirms candles are trimmed from the oldest end."""
+    state = DashboardState()
+    for i in range(100):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "close": float(100 + i),
+            "open": float(99 + i), "high": float(101 + i), "low": float(98 + i),
+            "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    # The 90 most recent closes are those with time 10..99, i.e. close 110.0..199.0
+    assert data["close"][0] == pytest.approx(110.0), (
+        f"First close after cap should be 110.0 (oldest of last-90); got {data['close'][0]}"
+    )
+    assert data["close"][-1] == pytest.approx(199.0), (
+        f"Last close after cap should be 199.0 (newest); got {data['close'][-1]}"
+    )

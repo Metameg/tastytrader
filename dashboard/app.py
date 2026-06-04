@@ -183,6 +183,8 @@ async def get_quote(symbol: str, request: Request):
 
 @app.get("/api/chart/{symbol}")
 async def get_chart(symbol: str, request: Request):
+    if not _re.fullmatch(r"[A-Za-z0-9.\-]{1,15}", symbol):
+        return JSONResponse(status_code=400, content={"error": "invalid symbol"})
     state: DashboardState = request.app.state.dashboard
     # Trigger daily candle subscription if streamer is available.
     # "Subscribe on selection" pattern: first chart fetch for a symbol
