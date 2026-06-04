@@ -164,3 +164,61 @@ async def cancel_order(
             headers={"Authorization": session_token},
         )
         resp.raise_for_status()
+
+
+_GREEKS_SENTINEL: dict[str, str] = {
+    "delta": "—",
+    "gamma": "—",
+    "theta": "—",
+    "vega": "—",
+    "iv": "—",
+}
+
+
+async def fetch_greeks(
+    session_token: str,
+    symbol: str,
+    base_url: str = BASE_URL,
+) -> dict[str, str]:
+    """Fetch option greeks for an OCC-formatted symbol.
+
+    Calls GET /option-chains/{underlying}, matches the contract by OCC symbol,
+    and returns a dict with keys delta, gamma, theta, vega, iv.
+    Every missing/error case returns the string sentinel "—" without raising.
+    """
+    # Import here to avoid circular — state.py is a sibling module
+    from dashboard.state import parse_occ
+
+    parsed = parse_occ(symbol)
+    if parsed is None:
+        return dict(_GREEKS_SENTINEL)
+
+    underlying = parsed["underlying"]
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{base_url}/option-chains/{underlying}",
+                headers={"Authorization": session_token},
+            )
+            resp.raise_for_status()
+            items: list[dict] = resp.json()["data"]["items"]
+    except Exception:
+        return dict(_GREEKS_SENTINEL)
+
+    contract: dict | None = next(
+        (it for it in items if it.get("symbol") == symbol), None
+    )
+    if contract is None:
+        return dict(_GREEKS_SENTINEL)
+
+    def _val(key: str) -> str:
+        v = contract.get(key)
+        return str(v) if v is not None and v != "" else "—"
+
+    return {
+        "delta": _val("delta"),
+        "gamma": _val("gamma"),
+        "theta": _val("theta"),
+        "vega": _val("vega"),
+        "iv": _val("implied-volatility"),
+    }
