@@ -808,3 +808,89 @@ def test_refresh_broadcasts_positions_as_list(client):
         f"positions SSE event data must be a plain list so handlePositions() can call "
         f".filter() on it; got {type(broadcast_data)!r}"
     )
+
+
+# --- Issue #7: data-contract — HTTP response JSON shape for /api/chart/{symbol} ---
+
+def test_get_chart_ema_arrays_contain_null_during_warmup_in_http_response(client):
+    """get_chart_data returns None for EMA values during warm-up.  FastAPI must
+    serialize these as JSON null (not omit the entries).  The frontend chart.js
+    uses spanGaps:true which relies on null entries being present in the array at
+    the correct index — missing entries would misalign the dataset with labels."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("NVDA", None)
+
+    # 3 candles — far fewer than EMA-10 period, so all EMA values are None
+    for close_price in [600.0, 601.0, 602.0]:
+        app.state.dashboard.on_candle({
+            "eventType": "Candle",
+            "eventSymbol": "NVDA{=d}",
+            "open": close_price - 1,
+            "high": close_price + 1,
+            "low": close_price - 2,
+            "close": close_price,
+            "volume": 3_000_000,
+        })
+
+    response = client.get("/api/chart/NVDA")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("NVDA", None)
+
+    assert response.status_code == 200
+    # Verify content-type is JSON
+    assert "application/json" in response.headers["content-type"]
+
+    data = response.json()
+    # ema_short and ema_long must be arrays of length 3 (same as close)
+    assert len(data["ema_short"]) == 3, (
+        f"ema_short must have one entry per candle (3); got {len(data['ema_short'])}"
+    )
+    assert len(data["ema_long"]) == 3, (
+        f"ema_long must have one entry per candle (3); got {len(data['ema_long'])}"
+    )
+    # During warm-up all entries must be JSON null (Python None → null via FastAPI)
+    assert all(v is None for v in data["ema_short"]), (
+        f"ema_short must be all null during warm-up (3 < period 10); got {data['ema_short']}"
+    )
+    assert all(v is None for v in data["ema_long"]), (
+        f"ema_long must be all null during warm-up (3 < period 20); got {data['ema_long']}"
+    )
+
+
+def test_get_chart_http_response_candle_event_uses_real_feed_key_names(client):
+    """Contract test: feeds a candle event dict using exactly the keys that
+    DashboardStreamer._dispatch_candle forwards from a real DXLink FEED_DATA
+    message (FEED_SETUP acceptEventFields: eventType, eventSymbol, open, high,
+    low, close, volume).  The HTTP response must include data for that candle —
+    confirming the full path from raw event → on_candle → get_chart_data →
+    HTTP JSON is wired together correctly with the real key names."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AMD", None)
+
+    # Exactly the keys from FEED_SETUP acceptEventFields["Candle"] — no extras
+    real_feed_event = {
+        "eventType": "Candle",
+        "eventSymbol": "AMD{=d}",
+        "open": 170.0,
+        "high": 175.0,
+        "low": 168.0,
+        "close": 172.0,
+        "volume": 4_000_000,
+    }
+    app.state.dashboard.on_candle(real_feed_event)
+
+    response = client.get("/api/chart/AMD")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AMD", None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["close"] == [172.0], (
+        "Full path on_candle → get_chart_data → HTTP must return close=172.0 "
+        f"for event with real FEED_SETUP key names; got close={data.get('close')}"
+    )
+    assert len(data["labels"]) == 1, (
+        "labels must contain one entry (position index 0) when 'time' is absent from event"
+    )

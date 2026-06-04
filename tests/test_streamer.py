@@ -524,3 +524,36 @@ async def test_quote_with_zero_bid_does_not_call_callback():
             pass
 
     price_cb.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Issue #7 contract: FEED_SETUP Candle acceptEventFields does not include 'time'
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_feed_setup_candle_fields_match_what_on_candle_processes():
+    """Contract: FEED_SETUP acceptEventFields['Candle'] lists exactly the fields
+    the server will include in each Candle event dict.  on_candle reads 'eventSymbol'
+    and get_chart_data reads 'close' — both must be present.  'time' is currently
+    NOT requested, so get_chart_data.sort falls back to 0 for all candles and labels
+    fall back to integer indices.  This test documents the current field contract."""
+    from dashboard.streamer import _FEED_SETUP
+
+    candle_fields = _FEED_SETUP["acceptEventFields"]["Candle"]
+
+    # Fields that MUST be present for the candle pipeline to work
+    assert "eventSymbol" in candle_fields, (
+        "FEED_SETUP must request 'eventSymbol' so on_candle can normalize the symbol"
+    )
+    assert "close" in candle_fields, (
+        "FEED_SETUP must request 'close' so get_chart_data can build the close array"
+    )
+
+    # 'time' is currently absent — get_chart_data sort falls back to 0 (no-op sort)
+    # If this assertion starts failing, verify get_chart_data sorts correctly with
+    # real DXLink timestamp values and update the labels/sort contract tests accordingly.
+    assert "time" not in candle_fields, (
+        "FEED_SETUP now requests 'time' for Candle events. "
+        "Update get_chart_data labels + sort tests to assert real timestamp values "
+        "are used instead of integer position indices."
+    )
