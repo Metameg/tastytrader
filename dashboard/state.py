@@ -2,8 +2,12 @@ from __future__ import annotations
 import asyncio
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
+
+_now = time.time
+_CANDLE_BROADCAST_INTERVAL: float = 1.0
 
 from src.models import PriceEvent
 from src.strategy import EMACalculator
@@ -23,6 +27,8 @@ class DashboardState:
         self._ema_short: dict = {}
         self._ema_long: dict = {}
         self.candles: dict[str, list[dict]] = {}
+        self._candle_last_broadcast: dict[str, float] = {}
+        self._candle_last_time: dict[str, int | None] = {}
 
     def get_account_summary(self) -> dict:
         return {
@@ -67,6 +73,8 @@ class DashboardState:
             "ema_short": ema_s,
             "ema_long": ema_l,
         }
+        # Persist live mark into state.positions (blip root-cause fix — AC8).
+        self.update_quote(s, price_event.last)
         payload = {"event": "quote", "data": self.quotes[s]}
         n = len(self.subscribers)
         print(f"[SSE] quote for {s} → broadcasting to {n} subscriber(s)")
@@ -88,22 +96,33 @@ class DashboardState:
             # Cap history to the most recent _MAX_CANDLES entries to bound memory usage
             if len(bucket) > self._MAX_CANDLES:
                 del bucket[: len(bucket) - self._MAX_CANDLES]
-        # Existing broadcast (must not regress)
-        payload = {"event": "candle", "data": ohlc}
-        for q in self.subscribers:
-            try:
-                q.put_nowait(payload)
-            except asyncio.QueueFull:
-                pass
+        # Throttled broadcast: at most once per _CANDLE_BROADCAST_INTERVAL per symbol;
+        # bypass throttle when candle time changes (new day / first candle).
+        candle_time = ohlc.get("time")
+        now = _now()
+        last_broadcast = self._candle_last_broadcast.get(plain_sym, 0.0)
+        last_time = self._candle_last_time.get(plain_sym)
+        is_new_day = candle_time is not None and candle_time != last_time
+        elapsed = now - last_broadcast
+        should_broadcast = is_new_day or elapsed >= _CANDLE_BROADCAST_INTERVAL
+        if should_broadcast:
+            self._candle_last_broadcast[plain_sym] = now
+            self._candle_last_time[plain_sym] = candle_time
+            payload = {"event": "candle", "data": ohlc}
+            for q in self.subscribers:
+                try:
+                    q.put_nowait(payload)
+                except asyncio.QueueFull:
+                    pass
 
     def get_chart_data(self, symbol: str) -> dict:
-        """Return chart data for Chart.js: sorted close prices + EMA-10/20 arrays.
+        """Return chart data for Chart.js: sorted OHLC prices + EMA-10/20 arrays.
 
-        Returns empty arrays if symbol is unknown or has no candle history.
+        Returns empty arrays for all keys if symbol is unknown or has no candle history.
         """
         candles = self.candles.get(symbol)
         if not candles:
-            return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+            return {"labels": [], "open": [], "high": [], "low": [], "close": [], "ema_short": [], "ema_long": []}
 
         sorted_candles = sorted(candles, key=lambda c: c.get("time", 0))
         # Filter out candles missing or having None close — partial events from DXLink
@@ -123,10 +142,24 @@ class DashboardState:
                 continue
             valid_candles.append((c, close_val))
         if not valid_candles:
-            return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+            return {"labels": [], "open": [], "high": [], "low": [], "close": [], "ema_short": [], "ema_long": []}
+
+        def _coerce_ohlc_field(raw: object, fallback: float) -> float:
+            """Coerce an OHLC field to float; fall back to close if missing or non-finite."""
+            if raw is None:
+                return fallback
+            try:
+                val = float(raw)
+            except (ValueError, TypeError):
+                return fallback
+            return val if math.isfinite(val) else fallback
+
         closes = [cv for _, cv in valid_candles]
         valid_candle_dicts = [c for c, _ in valid_candles]
         labels = [c.get("time", i) for i, c in enumerate(valid_candle_dicts)]
+        opens = [_coerce_ohlc_field(c.get("open"), cv) for c, cv in valid_candles]
+        highs = [_coerce_ohlc_field(c.get("high"), cv) for c, cv in valid_candles]
+        lows = [_coerce_ohlc_field(c.get("low"), cv) for c, cv in valid_candles]
 
         ema_s = EMACalculator(10)
         ema_l = EMACalculator(20)
@@ -135,6 +168,9 @@ class DashboardState:
 
         return {
             "labels": labels,
+            "open": opens,
+            "high": highs,
+            "low": lows,
             "close": closes,
             "ema_short": ema_short_vals,
             "ema_long": ema_long_vals,

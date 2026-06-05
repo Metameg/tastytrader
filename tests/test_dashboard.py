@@ -1258,7 +1258,7 @@ def test_get_chart_data_unknown_symbol_returns_empty_arrays():
     This allows the route to signal 'hide the chart' to the frontend."""
     state = DashboardState()
     data = state.get_chart_data("UNKNOWN")
-    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+    assert data == {"labels": [], "open": [], "high": [], "low": [], "close": [], "ema_short": [], "ema_long": []}
 
 
 def test_get_chart_data_returns_required_keys():
@@ -2169,3 +2169,440 @@ async def test_fetch_greeks_returns_dashes_when_data_has_no_items_key():
             f"if this fails it means the parser now handles list-direct data, "
             f"which would be a behaviour change worth reviewing"
         )
+
+
+# =============================================================================
+# Issue #22 — FAILING tests (RED phase)
+# =============================================================================
+
+# --- Issue #22 / Behavior 1: get_chart_data OHLC arrays ---
+
+
+def test_get_chart_data_returns_open_key():
+    """get_chart_data must return an 'open' key in the result dict."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert "open" in data, "get_chart_data must include 'open' key for candlestick rendering"
+
+
+def test_get_chart_data_returns_high_key():
+    """get_chart_data must return a 'high' key in the result dict."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert "high" in data, "get_chart_data must include 'high' key for candlestick rendering"
+
+
+def test_get_chart_data_returns_low_key():
+    """get_chart_data must return a 'low' key in the result dict."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert "low" in data, "get_chart_data must include 'low' key for candlestick rendering"
+
+
+def test_get_chart_data_ohlc_arrays_equal_length_as_close():
+    """open/high/low must each be the same length as close and labels."""
+    state = DashboardState()
+    closes = [150.0, 151.0, 152.0]
+    for i, c in enumerate(closes):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "open": c - 1.0, "high": c + 2.0, "low": c - 2.0, "close": c,
+            "volume": 1_000_000,
+        })
+    data = state.get_chart_data("AAPL")
+    n = len(data["close"])
+    assert len(data["open"]) == n, (
+        f"open length {len(data['open'])} must equal close length {n}"
+    )
+    assert len(data["high"]) == n, (
+        f"high length {len(data['high'])} must equal close length {n}"
+    )
+    assert len(data["low"]) == n, (
+        f"low length {len(data['low'])} must equal close length {n}"
+    )
+
+
+def test_get_chart_data_ohlc_values_match_candle_fields():
+    """open/high/low arrays must reflect the per-candle OHLC values."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 149.0, "high": 156.0, "low": 147.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert data["open"][0] == 149.0, f"Expected open=149.0, got {data['open'][0]}"
+    assert data["high"][0] == 156.0, f"Expected high=156.0, got {data['high'][0]}"
+    assert data["low"][0] == 147.0, f"Expected low=147.0, got {data['low'][0]}"
+
+
+def test_get_chart_data_missing_open_falls_back_to_close():
+    """A candle with missing 'open' must fall back to that candle's close value."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        # 'open' deliberately absent
+        "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert len(data["open"]) == 1, "open array must contain one entry"
+    assert data["open"][0] == 153.0, (
+        f"Missing open must fall back to close=153.0, got {data['open'][0]}"
+    )
+
+
+def test_get_chart_data_none_high_falls_back_to_close():
+    """A candle with high=None must fall back to that candle's close value."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 150.0, "high": None, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert data["high"][0] == 153.0, (
+        f"None high must fall back to close=153.0, got {data['high'][0]}"
+    )
+
+
+def test_get_chart_data_non_finite_low_falls_back_to_close():
+    """A candle with low='NaN' must fall back to close — non-finite OHLC field."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": "NaN", "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert data["low"][0] == 153.0, (
+        f"Non-finite low must fall back to close=153.0, got {data['low'][0]}"
+    )
+
+
+def test_get_chart_data_unknown_symbol_includes_ohlc_empty_arrays():
+    """Unknown symbol must return empty arrays for open/high/low/close (all new keys empty)."""
+    state = DashboardState()
+    data = state.get_chart_data("UNKNOWN")
+    assert data.get("open") == [], f"Expected empty open array, got {data.get('open')}"
+    assert data.get("high") == [], f"Expected empty high array, got {data.get('high')}"
+    assert data.get("low") == [], f"Expected empty low array, got {data.get('low')}"
+
+
+def test_get_chart_data_never_raises_on_partial_ohlc():
+    """get_chart_data must not raise even with completely garbage OHLC fields."""
+    state = DashboardState()
+    # Candle with all non-finite / garbage OHLC except valid close
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": "garbage", "high": float("inf"), "low": None, "close": 153.0,
+        "volume": 1_000_000,
+    })
+    # Must not raise
+    try:
+        data = state.get_chart_data("AAPL")
+    except Exception as exc:
+        pytest.fail(f"get_chart_data raised unexpectedly: {exc!r}")
+    # All OHLC arrays must be length 1 (falling back to close)
+    assert len(data["open"]) == 1
+    assert len(data["high"]) == 1
+    assert len(data["low"]) == 1
+
+
+# --- Issue #22 / Behavior 2: on_candle throttle ---
+#
+# Clock hook assumption:
+#   DashboardState.on_candle reads the current time via a module-level attribute
+#   `dashboard.state._now` (a callable, defaulting to `time.time`).  Tests replace
+#   it via monkeypatch:
+#       monkeypatch.setattr("dashboard.state._now", lambda: <fixed_float>)
+#   The implementation must call `dashboard.state._now()` (not `time.time()`
+#   directly) when deciding whether to broadcast.  This is the single hook the
+#   implementer MUST match.
+
+
+def test_on_candle_throttle_same_time_broadcasts_only_once_per_interval(monkeypatch):
+    """Rapid candles with the SAME candle time broadcast at most once per throttle
+    interval (~1.0 s).  Multiple ticks within the interval must produce at most
+    one SSE broadcast, though all are still stored in candle history.
+
+    Clock hook: implementation must expose dashboard.state._now (a callable,
+    default time.time) so tests can deterministically control time.
+    """
+    import dashboard.state as state_mod
+
+    # Verify the clock hook exists — fail clearly if not yet implemented
+    assert hasattr(state_mod, "_now"), (
+        "dashboard.state must expose a '_now' callable (e.g. `_now = time.time`) "
+        "so the throttle logic can be deterministically tested via monkeypatching"
+    )
+
+    # Freeze the wall clock at t=1000.0 for ALL rapid candles
+    monkeypatch.setattr(state_mod, "_now", lambda: 1000.0)
+
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    candle_time = 1_700_000_000  # fixed candle timestamp (same-day candle)
+
+    # Send 5 rapid ticks for the SAME candle time
+    for _ in range(5):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": candle_time,
+            "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0,
+            "volume": 1_000_000,
+        })
+
+    # All 5 must be in history
+    assert len(state.candles["AAPL"]) == 5, (
+        f"All 5 candles must accumulate in history; got {len(state.candles['AAPL'])}"
+    )
+
+    # Only 1 SSE broadcast should have occurred (throttled)
+    broadcasts = []
+    while not queue.empty():
+        broadcasts.append(queue.get_nowait())
+    assert len(broadcasts) == 1, (
+        f"Throttle must emit at most 1 broadcast for same-candle-time rapid ticks; "
+        f"got {len(broadcasts)}"
+    )
+
+
+def test_on_candle_throttle_new_candle_time_broadcasts_immediately(monkeypatch):
+    """A candle with a NEW time (day rollover / first candle) broadcasts IMMEDIATELY
+    regardless of the throttle interval."""
+    import dashboard.state as state_mod
+
+    assert hasattr(state_mod, "_now"), (
+        "dashboard.state must expose a '_now' callable for deterministic throttle testing"
+    )
+
+    # Wall clock starts at t=1000.0; previous broadcast recorded at 999.5 (just now)
+    call_count = 0
+    times = [999.9, 1000.0]  # second call still within 1s window
+
+    def mock_now():
+        nonlocal call_count
+        t = times[min(call_count, len(times) - 1)]
+        call_count += 1
+        return t
+
+    monkeypatch.setattr(state_mod, "_now", mock_now)
+
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    # First candle at time=1 (establishes last broadcast time)
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1_700_000_000,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    # Drain queue
+    while not queue.empty():
+        queue.get_nowait()
+
+    # Now send a candle with a DIFFERENT (newer) time — must broadcast immediately
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1_700_086_400,  # next day
+        "open": 154.0, "high": 159.0, "low": 152.0, "close": 157.0, "volume": 1_200_000,
+    })
+
+    assert not queue.empty(), (
+        "A new-day (new candle time) candle must broadcast immediately "
+        "regardless of the throttle interval"
+    )
+
+
+def test_on_candle_throttle_accumulates_all_history_regardless_of_throttle(monkeypatch):
+    """Even when throttled, ALL candles must be appended to state.candles history."""
+    import dashboard.state as state_mod
+
+    assert hasattr(state_mod, "_now"), (
+        "dashboard.state must expose a '_now' callable for deterministic throttle testing"
+    )
+
+    monkeypatch.setattr(state_mod, "_now", lambda: 5000.0)
+
+    state = DashboardState()
+    candle_time = 1_700_000_000
+
+    for i in range(10):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": candle_time,
+            "open": 150.0, "high": 155.0, "low": 148.0, "close": float(150 + i),
+            "volume": 1_000_000,
+        })
+
+    assert len(state.candles["AAPL"]) == 10, (
+        f"All 10 candles must be in history even when broadcast is throttled; "
+        f"got {len(state.candles['AAPL'])}"
+    )
+
+
+def test_on_candle_throttle_after_interval_broadcasts_again(monkeypatch):
+    """After the throttle interval has passed, the next candle with the same time
+    should broadcast again."""
+    import dashboard.state as state_mod
+
+    assert hasattr(state_mod, "_now"), (
+        "dashboard.state must expose a '_now' callable for deterministic throttle testing"
+    )
+
+    tick = [1000.0]
+
+    def mock_now():
+        return tick[0]
+
+    monkeypatch.setattr(state_mod, "_now", mock_now)
+
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    candle_time = 1_700_000_000
+
+    # First broadcast at t=1000.0
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": candle_time,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    while not queue.empty():
+        queue.get_nowait()
+
+    # Advance clock by more than 1.0s to exceed the throttle interval
+    tick[0] = 1001.5
+
+    # Same candle time but throttle interval elapsed — should broadcast again
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": candle_time,
+        "open": 150.0, "high": 156.0, "low": 148.0, "close": 154.0, "volume": 2_000_000,
+    })
+
+    assert not queue.empty(), (
+        "After the throttle interval has passed (1.5s > 1.0s), "
+        "on_candle must broadcast again for the same candle time"
+    )
+
+
+# --- Issue #22 / Behavior 5: on_quote persists live mark (blip root-cause fix) ---
+
+
+def test_on_quote_persists_mark_into_positions_current_price():
+    """on_quote must call update_quote so state.positions current_price is kept live.
+    After receiving a quote, positions[0]['current_price'] must be non-None."""
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+    event = PriceEvent(symbol="AAPL", last=155.0, bid=154.5, ask=155.5, timestamp=1.0)
+    state.on_quote(event)
+
+    assert state.positions[0]["current_price"] is not None, (
+        "on_quote must persist the mark into state.positions via update_quote; "
+        "current_price must not remain None after receiving a quote"
+    )
+
+
+def test_on_quote_persists_correct_mark_value_into_positions():
+    """on_quote must persist the mid-price mark (bid+ask)/2 via update_quote.
+    The positions entry's current_price must equal the computed mark."""
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+    # mark = (154.0 + 156.0) / 2 = 155.0
+    event = PriceEvent(symbol="AAPL", last=155.0, bid=154.0, ask=156.0, timestamp=1.0)
+    state.on_quote(event)
+
+    assert state.positions[0]["current_price"] == pytest.approx(155.0), (
+        f"on_quote must persist mark=(bid+ask)/2=155.0 into positions; "
+        f"got {state.positions[0]['current_price']}"
+    )
+
+
+def test_on_quote_persists_pl_into_positions_for_equity():
+    """on_quote must recompute and store pl in state.positions for an equity position."""
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+    event = PriceEvent(symbol="AAPL", last=155.0, bid=154.0, ask=156.0, timestamp=1.0)
+    state.on_quote(event)
+
+    # P&L = (155.0 - 150.0) * 10 = 50.0
+    assert state.positions[0]["pl"] == pytest.approx(50.0), (
+        f"on_quote must compute pl=(mark-avg_cost)*qty=50.0; "
+        f"got {state.positions[0]['pl']}"
+    )
+
+
+def test_on_quote_persists_pl_for_option_with_100_multiplier():
+    """on_quote must apply the 100x multiplier for Equity Option positions."""
+    state = DashboardState()
+    state.positions = [
+        {
+            "symbol": "AAPL  240119C00150000",
+            "instrument_type": "Equity Option",
+            "quantity": 2,
+            "avg_cost": "3.50",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+    # mark = (4.8 + 5.2) / 2 = 5.0
+    event = PriceEvent(
+        symbol="AAPL  240119C00150000", last=5.0, bid=4.8, ask=5.2, timestamp=1.0
+    )
+    state.on_quote(event)
+
+    # P&L = (5.0 - 3.50) * 2 * 100 = 300.0
+    assert state.positions[0]["pl"] == pytest.approx(300.0), (
+        f"on_quote must use 100x multiplier for options; "
+        f"got {state.positions[0]['pl']}"
+    )
