@@ -555,3 +555,154 @@ async def test_feed_setup_candle_fields_match_what_on_candle_processes():
         "FEED_SETUP must request 'time' so get_chart_data can sort candles by timestamp "
         "and produce meaningful time-based labels (Defect 2 fix)"
     )
+
+
+# =============================================================================
+# Issue #22 — FAILING tests (RED phase) — remove_candle behavior
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Test #22-S1 — remove_candle sends FEED_SUBSCRIPTION with 'remove' list
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_remove_candle_sends_feed_subscription_remove_message():
+    """remove_candle('AAPL') must send a FEED_SUBSCRIPTION message with a
+    'remove' list entry {"type": "Candle", "symbol": "AAPL{=d}"}."""
+    ws = _make_mock_ws()
+    _handshake_responses(ws, [])
+
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=MagicMock(),
+        candle_callback=MagicMock(),
+    )
+    # Pre-register AAPL so remove_candle knows it's subscribed
+    streamer.add_candle("AAPL", from_time=1_234_567_890)
+
+    cm = _make_connected_context(ws)
+    with patch("dashboard.streamer.websockets.connect", return_value=cm):
+        try:
+            await streamer._connect_and_stream()
+        except (StopAsyncIteration, Exception):
+            pass
+
+    # Manually set ws so remove_candle sends immediately
+    streamer._ws = ws
+
+    # Clear prior sends so only the remove message is checked
+    ws.send.reset_mock()
+
+    # Call remove_candle — must send a FEED_SUBSCRIPTION remove message
+    streamer.remove_candle("AAPL")
+
+    # Allow any create_task calls to run
+    import asyncio as _asyncio
+    await _asyncio.sleep(0)
+
+    sent_payloads = [json.loads(c.args[0]) for c in ws.send.call_args_list]
+    feed_sub_msgs = [p for p in sent_payloads if p.get("type") == "FEED_SUBSCRIPTION"]
+    assert feed_sub_msgs, "Expected at least one FEED_SUBSCRIPTION message from remove_candle"
+
+    removed = [item for msg in feed_sub_msgs for item in msg.get("remove", [])]
+    assert removed, (
+        f"remove_candle must include a 'remove' list in FEED_SUBSCRIPTION; "
+        f"got payloads: {feed_sub_msgs}"
+    )
+
+    removed_symbols = [item.get("symbol", "") for item in removed]
+    assert any("AAPL{=d}" in sym for sym in removed_symbols), (
+        f"Expected 'AAPL{{=d}}' in removed symbols list; got: {removed_symbols}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test #22-S2 — remove_candle drops symbol from _candle_symbols map
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_remove_candle_drops_symbol_from_candle_symbols_map():
+    """remove_candle('AAPL') must drop 'AAPL' from _candle_symbols so
+    the symbol is not re-subscribed on reconnect."""
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=MagicMock(),
+        candle_callback=MagicMock(),
+    )
+    streamer.add_candle("AAPL", from_time=1_234_567_890)
+    assert "AAPL" in streamer._candle_symbols, "AAPL must be in _candle_symbols after add_candle"
+
+    streamer.remove_candle("AAPL")
+
+    assert "AAPL" not in streamer._candle_symbols, (
+        "remove_candle must drop 'AAPL' from _candle_symbols"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test #22-S3 — remove_candle is a no-op when symbol not subscribed
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_remove_candle_noop_when_symbol_not_subscribed():
+    """remove_candle for a symbol that was never subscribed must not raise
+    and must not send any FEED_SUBSCRIPTION message (mirrors add_quote/add_candle
+    no-op semantics for unregistered symbols)."""
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=MagicMock(),
+        candle_callback=MagicMock(),
+    )
+    mock_ws = _make_mock_ws()
+    streamer._ws = mock_ws
+
+    # Should not raise
+    try:
+        streamer.remove_candle("UNKNOWN")
+    except Exception as exc:
+        pytest.fail(f"remove_candle raised unexpectedly for unsubscribed symbol: {exc!r}")
+
+    import asyncio as _asyncio
+    await _asyncio.sleep(0)
+
+    # No FEED_SUBSCRIPTION messages for a symbol we were never subscribed to
+    sent_payloads = [json.loads(c.args[0]) for c in mock_ws.send.call_args_list]
+    remove_msgs = [p for p in sent_payloads if p.get("type") == "FEED_SUBSCRIPTION" and "remove" in p]
+    assert not remove_msgs, (
+        f"remove_candle must be a no-op for unsubscribed symbols; "
+        f"got FEED_SUBSCRIPTION remove messages: {remove_msgs}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test #22-S4 — remove_candle is a no-op when _ws is None (not connected)
+# ---------------------------------------------------------------------------
+
+@_require_import
+async def test_remove_candle_noop_when_ws_is_none():
+    """remove_candle when _ws is None (not yet connected) must be a no-op —
+    it must not raise and must silently drop the symbol from the map if
+    present (so it won't be re-subscribed on connect)."""
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=MagicMock(),
+        candle_callback=MagicMock(),
+    )
+    # Pre-register so map has the symbol
+    streamer._candle_symbols["AAPL"] = 1_234_567_890.0
+    assert streamer._ws is None, "ws must be None before connect"
+
+    # Must not raise
+    try:
+        streamer.remove_candle("AAPL")
+    except Exception as exc:
+        pytest.fail(f"remove_candle raised when _ws is None: {exc!r}")
+
+    # Symbol must still be dropped from map even without ws
+    assert "AAPL" not in streamer._candle_symbols, (
+        "remove_candle must drop symbol from _candle_symbols even when _ws is None"
+    )

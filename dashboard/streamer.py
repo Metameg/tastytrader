@@ -59,10 +59,31 @@ class DashboardStreamer:
                 {"type": "Candle", "symbol": f"{symbol}{{=d}}", "fromTime": int(from_time)}
             ]))
 
+    def remove_candle(self, symbol: str) -> None:
+        """Unsubscribe from daily candles for the given symbol.
+
+        No-op if symbol is not subscribed. Drops the symbol from the internal map
+        so it is not re-subscribed on reconnect. Sends a FEED_SUBSCRIPTION remove
+        message only when the WebSocket is connected.
+        """
+        if symbol not in self._candle_symbols:
+            return
+        del self._candle_symbols[symbol]
+        if self._ws is not None:
+            asyncio.create_task(self._send_subscription_remove([
+                {"type": "Candle", "symbol": f"{symbol}{{=d}}"}
+            ]))
+
     async def _send_subscription(self, add_list: list) -> None:
         if self._ws is not None:
             await self._ws.send(json.dumps({
                 "type": "FEED_SUBSCRIPTION", "channel": 1, "add": add_list
+            }))
+
+    async def _send_subscription_remove(self, remove_list: list) -> None:
+        if self._ws is not None:
+            await self._ws.send(json.dumps({
+                "type": "FEED_SUBSCRIPTION", "channel": 1, "remove": remove_list
             }))
 
     async def _connect_and_stream(self) -> None:
