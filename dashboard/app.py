@@ -200,6 +200,7 @@ async def get_chart(symbol: str, request: Request):
         prev = getattr(request.app.state, "active_candle_symbol", None)
         if prev is not None and prev != symbol:
             request.app.state.streamer.remove_candle(prev)
+            state.evict_candle_state(prev)
         from_time = int(time.time() - 60 * 86400)
         request.app.state.streamer.add_candle(symbol, from_time)
         request.app.state.active_candle_symbol = symbol

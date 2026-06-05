@@ -6,11 +6,22 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from src.models import PriceEvent
+from src.strategy import EMACalculator
+
 _now = time.time
 _CANDLE_BROADCAST_INTERVAL: float = 1.0
 
-from src.models import PriceEvent
-from src.strategy import EMACalculator
+
+def _coerce_ohlc_field(raw: object, fallback: float) -> float:
+    """Coerce an OHLC field to float; fall back to close if missing or non-finite."""
+    if raw is None:
+        return fallback
+    try:
+        val = float(raw)
+    except (ValueError, TypeError):
+        return fallback
+    return val if math.isfinite(val) else fallback
 
 
 @dataclass
@@ -96,6 +107,8 @@ class DashboardState:
             # Cap history to the most recent _MAX_CANDLES entries to bound memory usage
             if len(bucket) > self._MAX_CANDLES:
                 del bucket[: len(bucket) - self._MAX_CANDLES]
+        if not plain_sym:
+            return
         # Throttled broadcast: at most once per _CANDLE_BROADCAST_INTERVAL per symbol;
         # bypass throttle when candle time changes (new day / first candle).
         candle_time = ohlc.get("time")
@@ -114,6 +127,16 @@ class DashboardState:
                     q.put_nowait(payload)
                 except asyncio.QueueFull:
                     pass
+
+    def evict_candle_state(self, symbol: str) -> None:
+        """Remove all in-memory candle state for a symbol.
+
+        Called when the active candle subscription switches to a different symbol
+        so that historical buckets for un-viewed symbols do not accumulate indefinitely.
+        """
+        self.candles.pop(symbol, None)
+        self._candle_last_broadcast.pop(symbol, None)
+        self._candle_last_time.pop(symbol, None)
 
     def get_chart_data(self, symbol: str) -> dict:
         """Return chart data for Chart.js: sorted OHLC prices + EMA-10/20 arrays.
@@ -143,16 +166,6 @@ class DashboardState:
             valid_candles.append((c, close_val))
         if not valid_candles:
             return {"labels": [], "open": [], "high": [], "low": [], "close": [], "ema_short": [], "ema_long": []}
-
-        def _coerce_ohlc_field(raw: object, fallback: float) -> float:
-            """Coerce an OHLC field to float; fall back to close if missing or non-finite."""
-            if raw is None:
-                return fallback
-            try:
-                val = float(raw)
-            except (ValueError, TypeError):
-                return fallback
-            return val if math.isfinite(val) else fallback
 
         closes = [cv for _, cv in valid_candles]
         valid_candle_dicts = [c for c, _ in valid_candles]

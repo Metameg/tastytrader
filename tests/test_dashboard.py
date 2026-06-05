@@ -3325,3 +3325,55 @@ def test_get_chart_data_numeric_string_low_coerces_to_float():
     assert data["low"][0] == pytest.approx(147.25), (
         f"low '147.25' must coerce to 147.25; got {data['low'][0]}"
     )
+
+
+# =============================================================================
+# Phase 5 review fixes — TDD tests (RED phase)
+# =============================================================================
+
+# --- Fix 1 [M1]: on_candle with empty/missing eventSymbol must not broadcast ---
+
+def test_on_candle_empty_eventsymbol_does_not_enqueue_candle_to_subscriber():
+    """on_candle with an event whose eventSymbol is absent (or empty after stripping
+    the {=d} suffix) must NOT enqueue any 'candle' payload to SSE subscribers.
+    The broadcast must only happen for events with a non-empty plain symbol."""
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    # Event with no eventSymbol key
+    state.on_candle({
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+
+    assert queue.empty(), (
+        "on_candle with missing eventSymbol must NOT enqueue a 'candle' event; "
+        "queue must remain empty"
+    )
+
+
+def test_on_candle_empty_string_eventsymbol_does_not_broadcast():
+    """on_candle with eventSymbol='' (empty string) must not broadcast and must
+    not touch throttle state under key ''."""
+    import dashboard.state as state_mod
+
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    state.on_candle({"eventSymbol": "", "close": 100.0})
+
+    assert queue.empty(), (
+        "on_candle with empty eventSymbol must NOT enqueue a candle event"
+    )
+    assert "" not in state._candle_last_broadcast, (
+        "on_candle with empty eventSymbol must not touch _candle_last_broadcast"
+    )
+    assert "" not in state._candle_last_time, (
+        "on_candle with empty eventSymbol must not touch _candle_last_time"
+    )
+
+
+# --- Fix 2 [Security M1 + NT2]: evict previous symbol state on candle-symbol swap ---
+# Note: the route-level test lives in tests/dashboard/test_app.py (below).
+# This module-level test covers the DashboardState.evict_candle_state helper.

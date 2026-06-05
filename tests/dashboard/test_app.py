@@ -1630,3 +1630,125 @@ def test_template_renders_with_fetch_positions_output_shape(client):
     )
     # Mark cell must show dash when current_price=None
     assert "<td" in response.text, "Table row must be rendered for the position"
+
+
+# =============================================================================
+# Phase 5 review fixes — TDD route tests (RED phase)
+# =============================================================================
+
+# --- Fix 2 [Security M1 + NT2]: evict previous symbol in-memory state on swap ---
+
+def test_get_chart_symbol_swap_evicts_previous_symbol_candle_state():
+    """After fetching /api/chart/A then /api/chart/B, state.candles must no longer
+    contain key 'A' (and the two throttle dicts must not contain 'A'), while 'B'
+    is retained.  This enforces the design's bounded-memory claim."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    original_streamer = getattr(app.state, "streamer", None)
+    had_active = hasattr(app.state, "active_candle_symbol")
+    original_active = getattr(app.state, "active_candle_symbol", None)
+    if had_active:
+        del app.state.active_candle_symbol
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            # Seed candles for both symbols so buckets exist (must be inside context)
+            app.state.dashboard.on_candle({
+                "eventSymbol": "EVICTA{=d}", "time": 1,
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 100,
+            })
+            app.state.dashboard.on_candle({
+                "eventSymbol": "EVICTB{=d}", "time": 1,
+                "open": 20.0, "high": 21.0, "low": 19.0, "close": 20.5, "volume": 100,
+            })
+            c.get("/api/chart/EVICTA")
+            c.get("/api/chart/EVICTB")
+
+            state = app.state.dashboard
+            assert "EVICTA" not in state.candles, (
+                "After switching from EVICTA to EVICTB, state.candles must not contain EVICTA"
+            )
+            assert "EVICTA" not in state._candle_last_broadcast, (
+                "After switching from EVICTA to EVICTB, _candle_last_broadcast must not contain EVICTA"
+            )
+            assert "EVICTA" not in state._candle_last_time, (
+                "After switching from EVICTA to EVICTB, _candle_last_time must not contain EVICTA"
+            )
+            # The current symbol's bucket must be retained
+            assert "EVICTB" in state.candles, (
+                "state.candles must retain the currently-active symbol EVICTB"
+            )
+
+            # Clean up seeded candle data
+            state.candles.pop("EVICTA", None)
+            state.candles.pop("EVICTB", None)
+            state._candle_last_broadcast.pop("EVICTA", None)
+            state._candle_last_broadcast.pop("EVICTB", None)
+            state._candle_last_time.pop("EVICTA", None)
+            state._candle_last_time.pop("EVICTB", None)
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        elif hasattr(app.state, "streamer"):
+            del app.state.streamer
+        if had_active and original_active is not None:
+            app.state.active_candle_symbol = original_active
+        elif not had_active and hasattr(app.state, "active_candle_symbol"):
+            del app.state.active_candle_symbol
+
+
+def test_get_chart_same_symbol_reselect_does_not_evict():
+    """Selecting the same symbol again (prev == new) must NOT evict its candle state."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time): pass
+        def remove_candle(self, symbol): pass
+
+    original_streamer = getattr(app.state, "streamer", None)
+    had_active = hasattr(app.state, "active_candle_symbol")
+    original_active = getattr(app.state, "active_candle_symbol", None)
+    if had_active:
+        del app.state.active_candle_symbol
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            # Seed candles for symbol (must be inside TestClient context)
+            app.state.dashboard.on_candle({
+                "eventSymbol": "NOEVICT{=d}", "time": 1,
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 100,
+            })
+            c.get("/api/chart/NOEVICT")
+            c.get("/api/chart/NOEVICT")  # reselect same symbol
+
+            state = app.state.dashboard
+            assert "NOEVICT" in state.candles, (
+                "Reselecting the same symbol must NOT evict its candle bucket"
+            )
+
+            # Clean up
+            state.candles.pop("NOEVICT", None)
+            state._candle_last_broadcast.pop("NOEVICT", None)
+            state._candle_last_time.pop("NOEVICT", None)
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        elif hasattr(app.state, "streamer"):
+            del app.state.streamer
+        if had_active and original_active is not None:
+            app.state.active_candle_symbol = original_active
+        elif not had_active and hasattr(app.state, "active_candle_symbol"):
+            del app.state.active_candle_symbol
