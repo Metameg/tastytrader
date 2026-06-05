@@ -1,4 +1,5 @@
 const statusDot = document.querySelector('.status-dot');
+const _GREEKS_EMPTY = { delta: '—', gamma: '—', theta: '—', vega: '—', iv: '—' };
 let es;
 let selectedSymbol = null;
 let selectedRow = null;
@@ -102,6 +103,15 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
     optFields.setAttribute('hidden', '');
   }
 
+  // Greeks section (only shown for Equity Option rows; populated async below)
+  const greeksSection = document.getElementById('detail-greeks-section');
+  if (instrumentType === 'Equity Option') {
+    greeksSection.removeAttribute('hidden');
+  } else {
+    greeksSection.setAttribute('hidden', '');
+    populateGreeks(_GREEKS_EMPTY);
+  }
+
   // Live quote fields (may be null on first populate before warm-up)
   updateDetailQuote(symbol, quote);
 
@@ -115,6 +125,14 @@ function populateDetailPanel(symbol, instrumentType, qty, avgCost, quote) {
   // Show content, hide empty state
   empty.setAttribute('hidden', '');
   content.removeAttribute('hidden');
+}
+
+function populateGreeks(data) {
+  document.getElementById('detail-delta').textContent = data.delta ?? '—';
+  document.getElementById('detail-gamma').textContent = data.gamma ?? '—';
+  document.getElementById('detail-theta').textContent = data.theta ?? '—';
+  document.getElementById('detail-vega').textContent  = data.vega  ?? '—';
+  document.getElementById('detail-iv').textContent    = data.iv    ?? '—';
 }
 
 function updateDetailQuote(symbol, quote) {
@@ -264,6 +282,40 @@ document.addEventListener('click', e => {
     .catch(() => {
       populateDetailPanel(symbol, instrumentType, qty, avgCost, null);
     });
+
+  // Fetch chart data — hide chart area if no candle data yet (no error shown)
+  const chartArea = document.getElementById('detail-chart-area');
+  if (chartArea) chartArea.classList.add('detail-chart-hidden');
+
+  fetch('/api/chart/' + encodeURIComponent(symbol))
+    .then(r => r.json())
+    .then(data => {
+      // Guard stale responses: rapid A→B selection can have A's response arrive after B's.
+      // symbol is captured from the closure at click time; selectedSymbol is the current
+      // module-level selection. If they differ this response is stale — discard it.
+      if (symbol !== selectedSymbol) return;
+      if (data.close && data.close.length > 0 && typeof window.updateChart === 'function') {
+        if (chartArea) chartArea.classList.remove('detail-chart-hidden');
+        window.updateChart(data.labels, data.close, data.ema_short, data.ema_long);
+      }
+      // If arrays are empty, chart area stays hidden — no error
+    })
+    .catch(() => {
+      // Network/parse error — chart area stays hidden, no error shown (AC4)
+      if (chartArea) chartArea.classList.add('detail-chart-hidden');
+    });
+
+  // Fetch greeks for option rows only
+  if (instrumentType === 'Equity Option') {
+    fetch(`/api/greeks/${encodeURIComponent(symbol)}`)
+      .then(r => r.json())
+      .then(data => {
+        populateGreeks(data);
+      })
+      .catch(() => {
+        populateGreeks(_GREEKS_EMPTY);
+      });
+  }
 });
 
 connect();

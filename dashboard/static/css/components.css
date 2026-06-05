@@ -734,21 +734,24 @@ input[type=number] { -moz-appearance: textfield; }
 .detail-pnl-positive { color: var(--green) !important; }
 .detail-pnl-negative { color: var(--red) !important; }
 
-/* Chart placeholder */
-.detail-chart-placeholder {
+/* Chart area (issue #7) */
+.detail-chart-area {
   flex: 1;
-  min-height: 120px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-top: 1px dashed var(--border-mid);
+  min-height: 160px;
+  border-top: 1px solid var(--border);
   margin-top: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3) var(--sp-3);
+  position: relative;
 }
 
-.detail-chart-msg {
-  font-size: var(--text-xs);
-  color: var(--text-faint);
-  font-family: var(--font-mono);
+.detail-chart-area.detail-chart-hidden {
+  display: none;
+}
+
+.detail-chart-canvas {
+  display: block;
+  width: 100%;
+  height: 140px;
 }
 
 /* Selected row highlight in positions table */

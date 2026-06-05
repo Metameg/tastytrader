@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -21,6 +22,7 @@ class DashboardState:
     def __post_init__(self) -> None:
         self._ema_short: dict = {}
         self._ema_long: dict = {}
+        self.candles: dict[str, list[dict]] = {}
 
     def get_account_summary(self) -> dict:
         return {
@@ -74,13 +76,69 @@ class DashboardState:
             except asyncio.QueueFull:
                 print(f"[SSE] queue full — dropping quote for {s}")
 
+    _MAX_CANDLES: int = 90
+
     def on_candle(self, ohlc: dict) -> None:
+        # Normalize eventSymbol: strip {=d} suffix to get plain symbol
+        raw_sym: str = ohlc.get("eventSymbol", "")
+        plain_sym = raw_sym.split("{")[0] if "{" in raw_sym else raw_sym
+        if plain_sym:
+            bucket = self.candles.setdefault(plain_sym, [])
+            bucket.append(ohlc)
+            # Cap history to the most recent _MAX_CANDLES entries to bound memory usage
+            if len(bucket) > self._MAX_CANDLES:
+                del bucket[: len(bucket) - self._MAX_CANDLES]
+        # Existing broadcast (must not regress)
         payload = {"event": "candle", "data": ohlc}
         for q in self.subscribers:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass
+
+    def get_chart_data(self, symbol: str) -> dict:
+        """Return chart data for Chart.js: sorted close prices + EMA-10/20 arrays.
+
+        Returns empty arrays if symbol is unknown or has no candle history.
+        """
+        candles = self.candles.get(symbol)
+        if not candles:
+            return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+
+        sorted_candles = sorted(candles, key=lambda c: c.get("time", 0))
+        # Filter out candles missing or having None close — partial events from DXLink
+        # (e.g. incomplete OHLC at market close) would otherwise crash with KeyError/TypeError.
+        # Also skip candles whose close can't be parsed to a finite float (e.g. "NaN",
+        # "Infinity", or non-numeric strings) to avoid ValueError / inf/nan propagation.
+        valid_candles = []
+        for c in sorted_candles:
+            raw_close = c.get("close")
+            if raw_close is None:
+                continue
+            try:
+                close_val = float(raw_close)
+            except (ValueError, TypeError):
+                continue
+            if not math.isfinite(close_val):
+                continue
+            valid_candles.append((c, close_val))
+        if not valid_candles:
+            return {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+        closes = [cv for _, cv in valid_candles]
+        valid_candle_dicts = [c for c, _ in valid_candles]
+        labels = [c.get("time", i) for i, c in enumerate(valid_candle_dicts)]
+
+        ema_s = EMACalculator(10)
+        ema_l = EMACalculator(20)
+        ema_short_vals = [ema_s.update(p) for p in closes]
+        ema_long_vals = [ema_l.update(p) for p in closes]
+
+        return {
+            "labels": labels,
+            "close": closes,
+            "ema_short": ema_short_vals,
+            "ema_long": ema_long_vals,
+        }
 
     def get_positions_grouped(self) -> list[dict]:
         equity_symbols: set[str] = {

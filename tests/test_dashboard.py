@@ -1173,3 +1173,999 @@ def test_on_quote_ema_short_populated_after_warmup():
     q = state.quotes["AAPL"]
     assert isinstance(q["ema_short"], float)
     assert isinstance(q["ema_long"], float)
+
+
+# --- Issue #7: DashboardState.on_candle accumulates history ---
+
+def test_on_candle_accumulates_candles_for_symbol():
+    """on_candle must store candle dicts so get_chart_data can return them.
+    A candle with eventSymbol 'AAPL{=d}' must be stored under the plain key 'AAPL'."""
+    state = DashboardState()
+    candle = {
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0,
+        "high": 155.0,
+        "low": 148.0,
+        "close": 153.0,
+        "volume": 1_000_000,
+    }
+    state.on_candle(candle)
+
+    data = state.get_chart_data("AAPL")
+    assert len(data["close"]) == 1
+    assert data["close"][0] == 153.0
+
+
+def test_on_candle_normalizes_dxfeed_suffix_to_plain_symbol():
+    """eventSymbol 'AAPL{=d}' must be stored under plain key 'AAPL'
+    because clients fetch /api/chart/AAPL (no suffix)."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+
+    # Must be retrievable under the plain symbol
+    data = state.get_chart_data("AAPL")
+    assert data["close"] != [], "Expected candle stored under plain symbol AAPL"
+
+    # Must NOT be stored under the suffixed symbol
+    data_suffixed = state.get_chart_data("AAPL{=d}")
+    assert data_suffixed["close"] == [], "Suffixed symbol 'AAPL{=d}' must not be a valid key"
+
+
+def test_on_candle_still_broadcasts_candle_event():
+    """on_candle must continue to broadcast a 'candle' SSE event to subscribers
+    so existing real-time behaviour is preserved."""
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    candle = {
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    }
+    state.on_candle(candle)
+
+    assert not queue.empty(), "Subscriber queue must receive a 'candle' event"
+    item = queue.get_nowait()
+    assert item["event"] == "candle"
+
+
+def test_on_candle_accumulates_multiple_candles_in_order():
+    """Multiple on_candle calls must accumulate all candles; get_chart_data returns
+    close prices in the order they were appended."""
+    state = DashboardState()
+    closes = [100.0, 101.0, 102.0, 103.0]
+    for i, close_price in enumerate(closes):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1,
+            "high": close_price + 1,
+            "low": close_price - 2,
+            "close": close_price,
+            "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert data["close"] == closes
+
+
+# --- Issue #7: DashboardState.get_chart_data ---
+
+def test_get_chart_data_unknown_symbol_returns_empty_arrays():
+    """Unknown symbol with no candles must return empty arrays for all keys.
+    This allows the route to signal 'hide the chart' to the frontend."""
+    state = DashboardState()
+    data = state.get_chart_data("UNKNOWN")
+    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}
+
+
+def test_get_chart_data_returns_required_keys():
+    """get_chart_data must return a dict with exactly the keys labels, close,
+    ema_short, ema_long (the shape the frontend Chart.js code expects)."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    for key in ("labels", "close", "ema_short", "ema_long"):
+        assert key in data, f"Missing key '{key}' in get_chart_data result"
+
+
+def test_get_chart_data_close_matches_stored_close_prices():
+    """The 'close' array in get_chart_data must equal the close prices fed via
+    on_candle in chronological order."""
+    state = DashboardState()
+    closes = [148.0, 150.0, 152.0, 151.0, 153.0]
+    for close_price in closes:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert data["close"] == closes
+
+
+def test_get_chart_data_ema_arrays_same_length_as_close():
+    """ema_short and ema_long arrays must have one value per close price so the
+    Chart.js dataset aligns with the labels/close arrays."""
+    state = DashboardState()
+    closes = [float(100 + i) for i in range(25)]
+    for close_price in closes:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert len(data["ema_short"]) == len(closes), (
+        f"ema_short length {len(data['ema_short'])} must equal close length {len(closes)}"
+    )
+    assert len(data["ema_long"]) == len(closes), (
+        f"ema_long length {len(data['ema_long'])} must equal close length {len(closes)}"
+    )
+
+
+def test_get_chart_data_ema_final_value_matches_ema_calculator():
+    """The final ema_short and ema_long values must match an independently-computed
+    EMACalculator over the same close sequence (short period=10, long period=20).
+    This pins the computation to real EMACalculator behaviour, not a reimplementation."""
+    from src.strategy import EMACalculator
+
+    state = DashboardState()
+    closes = [float(100 + i) for i in range(30)]
+    for close_price in closes:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+
+    # Independently compute expected final EMA values
+    ema_short_ref = EMACalculator(10)
+    ema_long_ref = EMACalculator(20)
+    for c in closes:
+        ema_short_ref.update(c)
+        ema_long_ref.update(c)
+
+    assert data["ema_short"][-1] == pytest.approx(ema_short_ref.value), (
+        f"ema_short final value {data['ema_short'][-1]} does not match EMACalculator(10) "
+        f"expected {ema_short_ref.value}"
+    )
+    assert data["ema_long"][-1] == pytest.approx(ema_long_ref.value), (
+        f"ema_long final value {data['ema_long'][-1]} does not match EMACalculator(20) "
+        f"expected {ema_long_ref.value}"
+    )
+
+
+# --- Issue #7: edge cases ---
+
+def test_get_chart_data_ema_warm_up_none_when_fewer_candles_than_long_period():
+    """With fewer candles than the long EMA period (5 < 20), all ema_long entries
+    must be None (warm-up region).  All four arrays must be equal length."""
+    state = DashboardState()
+    closes = [float(150 + i) for i in range(5)]
+    for i, close_price in enumerate(closes):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+
+    # All four arrays must be the same length
+    n = len(data["close"])
+    assert n == 5
+    assert len(data["labels"]) == n, "labels length must equal close length"
+    assert len(data["ema_short"]) == n, "ema_short length must equal close length"
+    assert len(data["ema_long"]) == n, "ema_long length must equal close length"
+
+    # With only 5 data points both EMA warm-ups (period 10, 20) are incomplete
+    assert all(v is None for v in data["ema_long"]), (
+        "All ema_long entries must be None when candle count (5) < long period (20)"
+    )
+    assert all(v is None for v in data["ema_short"]), (
+        "All ema_short entries must be None when candle count (5) < short period (10)"
+    )
+
+
+def test_get_chart_data_ema_long_none_during_warmup_short_resolves_after_period():
+    """After exactly 10 candles ema_short resolves to a float but ema_long remains
+    None (period=20 not yet reached).  Both arrays are still the same length as close."""
+    state = DashboardState()
+    for i in range(10):
+        state.on_candle({
+            "eventSymbol": "SPY{=d}",
+            "time": i,
+            "open": 450.0, "high": 455.0, "low": 448.0,
+            "close": float(450 + i), "volume": 2_000_000,
+        })
+
+    data = state.get_chart_data("SPY")
+
+    n = len(data["close"])
+    assert n == 10
+    assert len(data["ema_short"]) == n
+    assert len(data["ema_long"]) == n
+    # ema_short warm-up completes exactly at period=10 (last element is float)
+    assert isinstance(data["ema_short"][-1], float), (
+        "ema_short[-1] must be a float after 10 candles (period=10)"
+    )
+    # ema_long warm-up is not complete with only 10 candles (period=20)
+    assert all(v is None for v in data["ema_long"]), (
+        "All ema_long entries must be None when candle count (10) < long period (20)"
+    )
+
+
+def test_get_chart_data_out_of_order_candles_sorted_by_time():
+    """Candles delivered out of chronological order must be returned sorted by 'time'.
+    The close array and labels must reflect the sorted order."""
+    state = DashboardState()
+    # Feed candles out of order: time=300, 100, 200
+    for time_val, close_val in [(300, 153.0), (100, 143.0), (200, 148.0)]:
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": time_val,
+            "open": close_val - 1, "high": close_val + 1, "low": close_val - 2,
+            "close": close_val, "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [143.0, 148.0, 153.0], (
+        f"Expected closes sorted by time [143, 148, 153]; got {data['close']}"
+    )
+    assert data["labels"] == [100, 200, 300], (
+        f"Expected labels sorted by time [100, 200, 300]; got {data['labels']}"
+    )
+
+
+def test_on_candle_different_symbols_stored_separately():
+    """Candles for AAPL and SPY must accumulate in separate buckets.
+    Retrieving one symbol must not include candles from the other."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "SPY{=d}", "time": 100,
+        "open": 450.0, "high": 455.0, "low": 448.0, "close": 451.0, "volume": 5_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "open": 152.0, "high": 157.0, "low": 150.0, "close": 155.0, "volume": 1_000_000,
+    })
+
+    aapl_data = state.get_chart_data("AAPL")
+    spy_data = state.get_chart_data("SPY")
+
+    assert aapl_data["close"] == [153.0, 155.0], (
+        f"AAPL must have only its own candles; got {aapl_data['close']}"
+    )
+    assert spy_data["close"] == [451.0], (
+        f"SPY must have only its own candle; got {spy_data['close']}"
+    )
+
+
+def test_on_candle_spy_suffix_normalized_not_retrievable_with_suffix():
+    """SPY{=d} must be stored under the plain key 'SPY', confirming the suffix
+    normalization works for symbols other than AAPL."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "SPY{=d}", "time": 100,
+        "open": 450.0, "high": 455.0, "low": 448.0, "close": 451.0, "volume": 5_000_000,
+    })
+
+    # Retrievable via plain symbol
+    data_plain = state.get_chart_data("SPY")
+    assert data_plain["close"] == [451.0], (
+        "SPY{=d} candle must be accessible via plain key 'SPY'"
+    )
+
+    # NOT retrievable via suffixed key
+    data_suffixed = state.get_chart_data("SPY{=d}")
+    assert data_suffixed["close"] == [], (
+        "Suffixed key 'SPY{=d}' must return empty arrays"
+    )
+
+
+# --- Issue #7: data-contract — candle event key shape vs FEED_SETUP acceptEventFields ---
+
+def test_on_candle_reads_eventSymbol_key_as_sent_by_real_streamer():
+    """The streamer's _dispatch_candle forwards the raw FEED_DATA event dict verbatim
+    to on_candle.  FEED_SETUP requests 'eventSymbol' for Candle events, so on_candle
+    must normalize via ohlc.get('eventSymbol'), not any other key name.
+    Uses exactly the keys that FEED_SETUP acceptEventFields['Candle'] requests."""
+    state = DashboardState()
+    real_streamer_event = {
+        "eventType": "Candle",
+        "eventSymbol": "MSFT{=d}",
+        "open": 420.0,
+        "high": 425.0,
+        "low": 418.0,
+        "close": 422.0,
+        "volume": 2_000_000,
+    }
+    state.on_candle(real_streamer_event)
+
+    data = state.get_chart_data("MSFT")
+    assert len(data["close"]) == 1, (
+        "on_candle must read 'eventSymbol' (the key FEED_SETUP requests for Candle) "
+        "to normalize the symbol; got no data under plain key 'MSFT'"
+    )
+    assert data["close"][0] == 422.0
+
+
+def test_dispatch_candle_forwards_raw_event_to_on_candle():
+    """DashboardStreamer._dispatch_candle must forward the raw event dict to
+    candle_callback without modification.  The dict received by on_candle must
+    contain the same keys the FEED_DATA message carried — specifically 'eventSymbol'
+    and 'close' — so state.get_chart_data can process them correctly."""
+    from dashboard.streamer import DashboardStreamer
+
+    received: list[dict] = []
+
+    def capture_candle(ev: dict) -> None:
+        received.append(ev)
+
+    streamer = DashboardStreamer(
+        quote_token="tok",
+        streamer_url="wss://mock",
+        price_callback=lambda e: None,
+        candle_callback=capture_candle,
+    )
+
+    raw_event = {
+        "eventType": "Candle",
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0,
+        "high": 155.0,
+        "low": 148.0,
+        "close": 153.0,
+        "volume": 1_000_000,
+    }
+    streamer._dispatch_candle(raw_event)
+
+    assert len(received) == 1, "_dispatch_candle must call candle_callback exactly once"
+    ev = received[0]
+    assert ev.get("eventSymbol") == "AAPL{=d}", (
+        "_dispatch_candle must forward 'eventSymbol' unchanged so on_candle can strip suffix"
+    )
+    assert ev.get("close") == 153.0, (
+        "_dispatch_candle must forward 'close' unchanged so get_chart_data can read it"
+    )
+
+
+def test_feed_setup_candle_accepteventfields_includes_time():
+    """FEED_SETUP acceptEventFields for Candle must now include 'time' so that
+    get_chart_data can sort candles chronologically and produce real timestamp labels.
+    (Deliberate contract change — Defect 2 fix: 'time' was previously absent, causing
+    sort to be a no-op and labels to fall back to integer position indices.)"""
+    from dashboard.streamer import _FEED_SETUP
+
+    candle_fields = _FEED_SETUP["acceptEventFields"]["Candle"]
+    assert "time" in candle_fields, (
+        "FEED_SETUP acceptEventFields['Candle'] must include 'time' so real DXLink "
+        "candle events carry a sortable timestamp for chronological chart rendering."
+    )
+
+
+# --- Issue #7 (phase-4 fix): Defect 1 — malformed-candle crash guard ---
+
+def test_get_chart_data_skips_candles_missing_close_without_raising():
+    """get_chart_data must NOT raise when an accumulated candle is missing 'close'.
+    A partial OHLC candle from DXLink (e.g. market-close edge case) must be silently
+    skipped; the returned arrays must reflect only the valid candle(s), and all four
+    arrays (labels, close, ema_short, ema_long) must be equal-length."""
+    state = DashboardState()
+
+    # Accumulate a valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 100,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    # Accumulate a malformed candle missing the 'close' key entirely
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 200,
+        "open": 151.0, "high": 156.0, "low": 149.0,
+        # 'close' deliberately absent
+        "volume": 1_000_000,
+    })
+
+    # Must NOT raise — was crashing with KeyError: 'close'
+    data = state.get_chart_data("AAPL")
+
+    # Only the valid candle must survive
+    assert data["close"] == [153.0], (
+        f"Only the valid candle must be in close; got {data['close']}"
+    )
+    # All four arrays must be equal-length
+    n = len(data["close"])
+    assert len(data["labels"]) == n, "labels length must equal close length"
+    assert len(data["ema_short"]) == n, "ema_short length must equal close length"
+    assert len(data["ema_long"]) == n, "ema_long length must equal close length"
+
+
+def test_get_chart_data_skips_candles_with_none_close():
+    """get_chart_data must skip candles where close is explicitly None.
+    All surviving arrays must be equal-length and only contain valid candles."""
+    state = DashboardState()
+
+    # Valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 100,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    # Candle with close=None
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 200,
+        "open": 151.0, "high": 156.0, "low": 149.0, "close": None, "volume": 1_000_000,
+    })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [153.0], (
+        f"Candle with close=None must be filtered out; got {data['close']}"
+    )
+    n = len(data["close"])
+    assert len(data["labels"]) == n
+    assert len(data["ema_short"]) == n
+    assert len(data["ema_long"]) == n
+
+
+def test_get_chart_data_labels_are_indices_when_candles_have_no_time_field():
+    """When candles do not carry a 'time' field (as the real DXLink FEED_DATA delivers
+    given current FEED_SETUP), get_chart_data must fall back to integer position indices
+    for labels (c.get('time', i) returns i).  This confirms the fallback path works
+    without KeyError and the chart renders with index labels."""
+    state = DashboardState()
+    for close_price in [100.0, 101.0, 102.0]:
+        state.on_candle({
+            "eventType": "Candle",
+            "eventSymbol": "AAPL{=d}",
+            "open": close_price - 1,
+            "high": close_price + 1,
+            "low": close_price - 2,
+            "close": close_price,
+            "volume": 1_000_000,
+            # Deliberately NO "time" key — matches real FEED_DATA with current FEED_SETUP
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert data["labels"] == [0, 1, 2], (
+        "Without 'time' field, labels must be integer position indices [0, 1, 2]; "
+        f"got {data['labels']}"
+    )
+    assert data["close"] == [100.0, 101.0, 102.0]
+
+
+# --- FIX 3 (security L2): defensive float parsing in get_chart_data ---
+
+def test_get_chart_data_skips_candle_with_nan_string_close():
+    """A candle with close='NaN' must be silently skipped — no exception, no nan in output.
+    All four result arrays must remain equal-length and contain only valid candles."""
+    state = DashboardState()
+
+    # Valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "open": 149.0, "high": 154.0, "low": 147.0, "close": 150.0, "volume": 1_000_000,
+    })
+    # Candle with non-finite close string
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": "NaN", "volume": 1_000_000,
+    })
+    # Another valid candle
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 300,
+        "open": 151.0, "high": 156.0, "low": 149.0, "close": 152.0, "volume": 1_000_000,
+    })
+
+    # Must not raise
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [150.0, 152.0], (
+        f"Candle with close='NaN' must be skipped; got {data['close']}"
+    )
+    n = len(data["close"])
+    assert len(data["labels"]) == n, "labels must equal close length"
+    assert len(data["ema_short"]) == n, "ema_short must equal close length"
+    assert len(data["ema_long"]) == n, "ema_long must equal close length"
+
+
+def test_get_chart_data_skips_candle_with_non_numeric_close_string():
+    """A candle with close='garbage' (non-numeric string) must be silently skipped."""
+    state = DashboardState()
+
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "close": 148.0, "open": 147.0, "high": 150.0, "low": 146.0, "volume": 1_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "close": "not-a-number", "open": 148.0, "high": 151.0, "low": 147.0, "volume": 1_000_000,
+    })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [148.0], (
+        f"Non-numeric close must be skipped; got {data['close']}"
+    )
+    n = len(data["close"])
+    assert len(data["labels"]) == n
+    assert len(data["ema_short"]) == n
+    assert len(data["ema_long"]) == n
+
+
+def test_get_chart_data_skips_candle_with_infinity_close():
+    """A candle with close='Infinity' must be skipped — math.isfinite rejects it."""
+    state = DashboardState()
+
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 100,
+        "close": 148.0, "open": 147.0, "high": 150.0, "low": 146.0, "volume": 1_000_000,
+    })
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}", "time": 200,
+        "close": "Infinity", "open": 148.0, "high": 151.0, "low": 147.0, "volume": 1_000_000,
+    })
+
+    data = state.get_chart_data("AAPL")
+
+    assert data["close"] == [148.0], (
+        f"Infinity close must be skipped; got {data['close']}"
+    )
+
+
+# --- FIX 2 (security M2): bound per-symbol candle history to 90 entries ---
+
+def test_on_candle_caps_history_at_90_entries():
+    """After accumulating more than 90 candles for a symbol, get_chart_data must
+    return at most 90 closes (the most recent ones, in time order)."""
+    state = DashboardState()
+    # Feed 100 candles with increasing time and close values
+    for i in range(100):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "open": float(100 + i), "high": float(102 + i),
+            "low": float(98 + i), "close": float(100 + i),
+            "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    assert len(data["close"]) <= 90, (
+        f"get_chart_data must return at most 90 closes; got {len(data['close'])}"
+    )
+
+
+def test_on_candle_caps_history_keeps_most_recent_entries():
+    """When capped at 90, the returned closes must be the last 90 fed (highest time
+    values), not the first 90.  Confirms candles are trimmed from the oldest end."""
+    state = DashboardState()
+    for i in range(100):
+        state.on_candle({
+            "eventSymbol": "AAPL{=d}",
+            "time": i,
+            "close": float(100 + i),
+            "open": float(99 + i), "high": float(101 + i), "low": float(98 + i),
+            "volume": 1_000_000,
+        })
+
+    data = state.get_chart_data("AAPL")
+    # The 90 most recent closes are those with time 10..99, i.e. close 110.0..199.0
+    assert data["close"][0] == pytest.approx(110.0), (
+        f"First close after cap should be 110.0 (oldest of last-90); got {data['close'][0]}"
+    )
+    assert data["close"][-1] == pytest.approx(199.0), (
+        f"Last close after cap should be 199.0 (newest); got {data['close'][-1]}"
+    )
+# --- fetch_greeks (Issue #8) ---
+
+# OCC symbol used across greeks tests: AAPL, expiry 2025-01-17, Call, $150
+_OPTION_SYMBOL = "AAPL  250117C00150000"
+_UNDERLYING = "AAPL"
+
+# Canonical full API response shape expected from /option-chains/<underlying>
+_GREEKS_API_RESPONSE = {
+    "data": {
+        "items": [
+            {
+                "symbol": _OPTION_SYMBOL,
+                "delta": "0.42",
+                "gamma": "0.03",
+                "theta": "-0.05",
+                "vega": "0.12",
+                "implied-volatility": "0.28",
+            }
+        ]
+    }
+}
+
+# Expected normalised dict returned by fetch_greeks when greeks are present
+_EXPECTED_GREEKS = {
+    "delta": "0.42",
+    "gamma": "0.03",
+    "theta": "-0.05",
+    "vega": "0.12",
+    "iv": "0.28",
+}
+
+_DASH = "—"
+
+
+async def test_fetch_greeks_hits_option_chain_endpoint_with_underlying():
+    """fetch_greeks must call /option-chains/<UNDERLYING> where UNDERLYING is
+    derived from the OCC symbol via parse_occ.  URL must contain the correct path."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = _GREEKS_API_RESPONSE
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    call_args, call_kwargs = mock_client.get.call_args
+    url = call_args[0] if call_args else call_kwargs.get("url", "")
+    assert f"/option-chains/{_UNDERLYING}" in url, (
+        f"Expected URL to contain /option-chains/{_UNDERLYING}, got: {url}"
+    )
+
+
+async def test_fetch_greeks_sends_auth_header():
+    """fetch_greeks must pass Authorization: <session_token> header."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = _GREEKS_API_RESPONSE
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        await fetch_greeks(session_token="my-secret-token", symbol=_OPTION_SYMBOL)
+
+    _, kwargs = mock_client.get.call_args
+    assert kwargs["headers"]["Authorization"] == "my-secret-token", (
+        "Authorization header must equal the session_token passed in"
+    )
+
+
+async def test_fetch_greeks_returns_all_five_greek_keys_when_contract_found():
+    """When a matching OCC contract with full greeks is found, fetch_greeks must
+    return a dict with exactly delta, gamma, theta, vega, iv keys and their values."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = _GREEKS_API_RESPONSE
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert key in result, f"Expected key '{key}' in result dict, got: {result.keys()}"
+    assert result == _EXPECTED_GREEKS
+
+
+async def test_fetch_greeks_returns_dashes_when_items_list_is_empty():
+    """When data.items is an empty list, fetch_greeks must return all five greeks
+    as the em-dash sentinel '—' and must NOT raise."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"data": {"items": []}}
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for key '{key}' when items list is empty, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_when_occ_symbol_not_in_items():
+    """When the API returns items but none match the requested OCC symbol,
+    fetch_greeks must return all five greeks as '—' and must NOT raise."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": "AAPL  250117C00200000",  # different strike
+                    "delta": "0.10",
+                    "gamma": "0.01",
+                    "theta": "-0.02",
+                    "vega": "0.05",
+                    "implied-volatility": "0.22",
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' when symbol not found in items, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_when_greeks_fields_missing_from_contract():
+    """When the matching contract exists but lacks greeks fields (cert sandbox
+    returning no greeks), fetch_greeks must return all five as '—' without raising."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    # No delta/gamma/theta/vega/implied-volatility fields
+                    "underlying-symbol": "AAPL",
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' when greeks fields absent, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_on_http_error():
+    """When httpx raises an HTTP error (e.g. 401/500), fetch_greeks must return
+    all five greeks as '—' and must NOT propagate the exception."""
+    from dashboard.api import fetch_greeks
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.HTTPStatusError(
+        "401 Unauthorized",
+        request=MagicMock(),
+        response=MagicMock(status_code=401),
+    )
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="bad-token", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' on HTTP error, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_on_network_error():
+    """When httpx raises a network-level error (ConnectError), fetch_greeks must
+    return all five greeks as '—' and must NOT propagate the exception."""
+    from dashboard.api import fetch_greeks
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.ConnectError("connection refused")
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' on network error, got: {result[key]!r}"
+        )
+
+
+# --- Edge-case tests (Phase 4) ---
+
+
+async def test_fetch_greeks_preserves_zero_string_value():
+    """A greek that is legitimately "0" (string) must NOT be replaced by the
+    sentinel.  This is a regression guard for the _val() fix: v not in (None,
+    "", "0") was the broken form; v is not None and v != "" is correct."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    "delta": "0",
+                    "gamma": "0",
+                    "theta": "0",
+                    "vega": "0",
+                    "implied-volatility": "0",
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == "0", (
+            f"Expected '0' for '{key}' when greek value is zero string, "
+            f"got {result[key]!r} — zero values must be preserved, not sentinelled"
+        )
+
+
+async def test_fetch_greeks_preserves_integer_zero_value():
+    """A greek returned as the integer 0 (not the string "0") must also be
+    preserved.  The API may return numeric types; str(0) == "0", not "—"."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    "delta": 0,
+                    "gamma": 0,
+                    "theta": 0,
+                    "vega": 0,
+                    "implied-volatility": 0,
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == "0", (
+            f"Expected '0' for '{key}' when greek value is integer 0, "
+            f"got {result[key]!r} — integer zero must not be treated as missing"
+        )
+
+
+async def test_fetch_greeks_partial_greeks_present_others_dashes():
+    """When only some greek fields are present on the matched contract, the
+    present ones must be returned as-is and the absent ones must be '—'."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": _OPTION_SYMBOL,
+                    "delta": "0.55",
+                    # gamma, theta, vega, implied-volatility intentionally absent
+                }
+            ]
+        }
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    assert result["delta"] == "0.55", (
+        f"Expected delta='0.55' (present in contract), got {result['delta']!r}"
+    )
+    for key in ("gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for absent field '{key}', got {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_on_request_error_base_class():
+    """httpx.RequestError (the base class for all network errors, e.g. a
+    ReadTimeout) must also result in all-dashes — not just ConnectError."""
+    from dashboard.api import fetch_greeks
+
+    mock_client = AsyncMock()
+    mock_client.get.side_effect = httpx.TimeoutException("timed out")
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' on TimeoutException, got: {result[key]!r}"
+        )
+
+
+async def test_fetch_greeks_returns_dashes_when_data_has_no_items_key():
+    """Contract assumption guard: fetch_greeks expects data["items"] (a list).
+    If the real /option-chains endpoint returns {"data": [...]} directly
+    (no "items" wrapper), the KeyError is caught and all-dashes are returned
+    rather than raising.  This test documents the shape assumption and confirms
+    graceful degradation if the assumption is wrong."""
+    from dashboard.api import fetch_greeks
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    # Simulate a response where "data" is a list directly, not {"items": [...]}
+    mock_resp.json.return_value = {
+        "data": [
+            {
+                "symbol": _OPTION_SYMBOL,
+                "delta": "0.42",
+                "gamma": "0.03",
+                "theta": "-0.05",
+                "vega": "0.12",
+                "implied-volatility": "0.28",
+            }
+        ]
+    }
+
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        result = await fetch_greeks(session_token="tok", symbol=_OPTION_SYMBOL)
+
+    for key in ("delta", "gamma", "theta", "vega", "iv"):
+        assert result[key] == _DASH, (
+            f"Expected '—' for '{key}' when data has no items key, got: {result[key]!r} — "
+            f"if this fails it means the parser now handles list-direct data, "
+            f"which would be a behaviour change worth reviewing"
+        )

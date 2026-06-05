@@ -663,6 +663,114 @@ def test_get_quote_response_contains_all_six_required_keys(client):
 
 # --- Issue #6: _refresh positions SSE broadcast shape ---
 
+# --- Issue #7: GET /api/chart/{symbol} ---
+
+def test_get_chart_returns_200_when_candle_data_exists(client):
+    """Route must return 200 with chart data when candle history exists for symbol."""
+    from dashboard.app import app
+    # Seed candle history directly via on_candle so the state has data
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL")
+    # Clean up
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL", None)
+
+    assert response.status_code == 200
+
+
+def test_get_chart_returns_required_keys_when_data_exists(client):
+    """Route response must contain labels, close, ema_short, ema_long keys."""
+    from dashboard.app import app
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL", None)
+
+    data = response.json()
+    for key in ("labels", "close", "ema_short", "ema_long"):
+        assert key in data, f"Missing key '{key}' in /api/chart/AAPL response"
+
+
+def test_get_chart_close_reflects_stored_closes(client):
+    """The 'close' array in the route response must equal the accumulated close prices."""
+    from dashboard.app import app
+    # Ensure clean state for this symbol
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("TSLA", None)
+
+    closes = [200.0, 201.0, 202.0]
+    for close_price in closes:
+        app.state.dashboard.on_candle({
+            "eventSymbol": "TSLA{=d}",
+            "open": close_price - 1, "high": close_price + 1, "low": close_price - 2,
+            "close": close_price, "volume": 500_000,
+        })
+
+    response = client.get("/api/chart/TSLA")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("TSLA", None)
+
+    data = response.json()
+    assert data["close"] == closes, (
+        f"Expected close={closes} in response; got {data.get('close')}"
+    )
+
+
+def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
+    """Unknown symbol with no candle data must return 200 with empty arrays
+    (NOT 404, NOT an error) so the frontend can hide the chart silently."""
+    response = client.get("/api/chart/UNKNWN")
+    assert response.status_code == 200
+    data = response.json()
+    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}, (
+        f"Expected empty-array dict for unknown symbol; got {data}"
+    )
+
+
+# --- Issue #7: /api/chart route edge cases ---
+
+def test_get_chart_returns_four_keys_for_unknown_symbol(client):
+    """All four chart keys must be present even for a symbol with no history.
+    The frontend always destructures {labels, close, ema_short, ema_long}."""
+    response = client.get("/api/chart/UNKWNSYM")
+    assert response.status_code == 200
+    data = response.json()
+    for key in ("labels", "close", "ema_short", "ema_long"):
+        assert key in data, f"Key '{key}' missing from empty-symbol chart response"
+
+
+def test_get_chart_close_in_chronological_order_when_candles_fed_out_of_order(client):
+    """Even if candles are accumulated out of order, the route must return closes
+    sorted by time so Chart.js renders the line left-to-right correctly."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("MSFT", None)
+
+    # Feed out of order: time=300, 100, 200
+    for time_val, close_val in [(300, 303.0), (100, 301.0), (200, 302.0)]:
+        app.state.dashboard.on_candle({
+            "eventSymbol": "MSFT{=d}",
+            "time": time_val,
+            "open": close_val - 1, "high": close_val + 1, "low": close_val - 2,
+            "close": close_val, "volume": 1_000_000,
+        })
+
+    response = client.get("/api/chart/MSFT")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("MSFT", None)
+
+    data = response.json()
+    assert data["close"] == [301.0, 302.0, 303.0], (
+        f"Expected closes sorted by time; got {data.get('close')}"
+    )
+
+
 def test_refresh_broadcasts_positions_as_list(client):
     """_refresh must broadcast the positions list directly (not wrapped in a dict)
     because JS handlePositions() calls .filter() on the received value.
@@ -699,4 +807,306 @@ def test_refresh_broadcasts_positions_as_list(client):
     assert isinstance(broadcast_data, list), (
         f"positions SSE event data must be a plain list so handlePositions() can call "
         f".filter() on it; got {type(broadcast_data)!r}"
+    )
+
+
+# --- Issue #7: data-contract — HTTP response JSON shape for /api/chart/{symbol} ---
+
+def test_get_chart_ema_arrays_contain_null_during_warmup_in_http_response(client):
+    """get_chart_data returns None for EMA values during warm-up.  FastAPI must
+    serialize these as JSON null (not omit the entries).  The frontend chart.js
+    uses spanGaps:true which relies on null entries being present in the array at
+    the correct index — missing entries would misalign the dataset with labels."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("NVDA", None)
+
+    # 3 candles — far fewer than EMA-10 period, so all EMA values are None
+    for close_price in [600.0, 601.0, 602.0]:
+        app.state.dashboard.on_candle({
+            "eventType": "Candle",
+            "eventSymbol": "NVDA{=d}",
+            "open": close_price - 1,
+            "high": close_price + 1,
+            "low": close_price - 2,
+            "close": close_price,
+            "volume": 3_000_000,
+        })
+
+    response = client.get("/api/chart/NVDA")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("NVDA", None)
+
+    assert response.status_code == 200
+    # Verify content-type is JSON
+    assert "application/json" in response.headers["content-type"]
+
+    data = response.json()
+    # ema_short and ema_long must be arrays of length 3 (same as close)
+    assert len(data["ema_short"]) == 3, (
+        f"ema_short must have one entry per candle (3); got {len(data['ema_short'])}"
+    )
+    assert len(data["ema_long"]) == 3, (
+        f"ema_long must have one entry per candle (3); got {len(data['ema_long'])}"
+    )
+    # During warm-up all entries must be JSON null (Python None → null via FastAPI)
+    assert all(v is None for v in data["ema_short"]), (
+        f"ema_short must be all null during warm-up (3 < period 10); got {data['ema_short']}"
+    )
+    assert all(v is None for v in data["ema_long"]), (
+        f"ema_long must be all null during warm-up (3 < period 20); got {data['ema_long']}"
+    )
+
+
+def test_get_chart_http_response_candle_event_uses_real_feed_key_names(client):
+    """Contract test: feeds a candle event dict using exactly the keys that
+    DashboardStreamer._dispatch_candle forwards from a real DXLink FEED_DATA
+    message (FEED_SETUP acceptEventFields: eventType, eventSymbol, open, high,
+    low, close, volume).  The HTTP response must include data for that candle —
+    confirming the full path from raw event → on_candle → get_chart_data →
+    HTTP JSON is wired together correctly with the real key names."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AMD", None)
+
+    # Exactly the keys from FEED_SETUP acceptEventFields["Candle"] — no extras
+    real_feed_event = {
+        "eventType": "Candle",
+        "eventSymbol": "AMD{=d}",
+        "open": 170.0,
+        "high": 175.0,
+        "low": 168.0,
+        "close": 172.0,
+        "volume": 4_000_000,
+    }
+    app.state.dashboard.on_candle(real_feed_event)
+
+    response = client.get("/api/chart/AMD")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AMD", None)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["close"] == [172.0], (
+        "Full path on_candle → get_chart_data → HTTP must return close=172.0 "
+        f"for event with real FEED_SETUP key names; got close={data.get('close')}"
+    )
+    assert len(data["labels"]) == 1, (
+        "labels must contain one entry (position index 0) when 'time' is absent from event"
+    )
+
+
+# --- FIX 1 (security M1): validate symbol path param in GET /api/chart/{symbol} ---
+
+def test_get_chart_rejects_symbol_exceeding_15_chars(client):
+    """A symbol longer than 15 characters must return 400 — invalid symbol."""
+    response = client.get("/api/chart/AVERYLONGSYMBOLNAME12345")
+    assert response.status_code == 400
+    data = response.json()
+    assert data.get("error") == "invalid symbol"
+
+
+def test_get_chart_rejects_symbol_with_curly_brace(client):
+    """A symbol containing '{' must return 400 — DXLink injection defence."""
+    response = client.get("/api/chart/AAPL%7B%3Dd%7D")
+    assert response.status_code == 400
+    data = response.json()
+    assert data.get("error") == "invalid symbol"
+
+
+def test_get_chart_rejects_symbol_with_slash(client):
+    """A symbol containing '/' must not return 200 — FastAPI rejects it at the router
+    level (404 path-not-found) before the validator even runs, which is equally safe."""
+    # URL-encode the slash; the router splits the path and returns 404
+    response = client.get("/api/chart/AA%2FPL")
+    assert response.status_code != 200
+
+
+def test_get_chart_rejects_symbol_with_space(client):
+    """A symbol containing a space must return 400."""
+    response = client.get("/api/chart/AA%20PL")
+    assert response.status_code == 400
+    data = response.json()
+    assert data.get("error") == "invalid symbol"
+
+
+def test_get_chart_accepts_valid_equity_symbol(client):
+    """Plain equity symbol AAPL must be accepted (not return 400)."""
+    response = client.get("/api/chart/AAPL")
+    assert response.status_code == 200
+
+
+def test_get_chart_accepts_dotted_symbol(client):
+    """BRK.B (contains dot) must be accepted — dot is in the allowed charset."""
+    response = client.get("/api/chart/BRK.B")
+    assert response.status_code == 200
+# --- Issue #8: GET /api/greeks/{symbol} ---
+
+_GREEKS_KEYS = ("delta", "gamma", "theta", "vega", "iv")
+_DASH = "—"
+# Valid OCC option symbol: AAPL, 2025-01-17, Call, $150
+_OCC_SYMBOL = "AAPL  250117C00150000"
+_EXPECTED_GREEKS = {
+    "delta": "0.42",
+    "gamma": "0.03",
+    "theta": "-0.05",
+    "vega": "0.12",
+    "iv": "0.28",
+}
+
+
+def test_get_greeks_returns_200_with_five_keys_for_option_symbol(client):
+    """GET /api/greeks/<OCC_SYMBOL> must return HTTP 200 with a JSON body
+    containing exactly the five greek keys: delta, gamma, theta, vega, iv."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = _EXPECTED_GREEKS
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200, (
+        f"Expected 200 for option symbol, got {response.status_code}"
+    )
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert key in data, f"Expected key '{key}' in response, got keys: {list(data.keys())}"
+
+
+def test_get_greeks_returns_correct_values_from_fetch_greeks(client):
+    """The route must return the exact dict that fetch_greeks resolves to,
+    without transforming values."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = _EXPECTED_GREEKS
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    assert response.json() == _EXPECTED_GREEKS
+
+
+def test_get_greeks_calls_fetch_greeks_with_symbol_and_token(client):
+    """The route must invoke fetch_greeks with the URL symbol and the app's
+    session_token.  Verify the call was made with the right arguments."""
+    from dashboard.app import app
+    app.state.session_token = "route-test-token"
+
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = _EXPECTED_GREEKS
+        client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    mock_fetch.assert_called_once()
+    call_kwargs = mock_fetch.call_args[1] if mock_fetch.call_args[1] else {}
+    call_args = mock_fetch.call_args[0]
+    # Accept either positional or keyword arguments
+    called_token = call_kwargs.get("session_token") or (call_args[0] if call_args else None)
+    called_symbol = call_kwargs.get("symbol") or (call_args[1] if len(call_args) > 1 else None)
+    assert called_token == "route-test-token", (
+        f"Expected session_token='route-test-token', got: {called_token!r}"
+    )
+    assert called_symbol == _OCC_SYMBOL, (
+        f"Expected symbol='{_OCC_SYMBOL}', got: {called_symbol!r}"
+    )
+
+
+def test_get_greeks_returns_all_dashes_for_equity_symbol_without_calling_chain_api(client):
+    """When the symbol is an equity (not an OCC option), the route must NOT call
+    fetch_greeks and must return a response with all five greeks as '—'.
+    This enforces the equity short-circuit: greeks are never fetched for equities."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        response = client.get("/api/greeks/AAPL")
+
+    assert response.status_code == 200, (
+        f"Expected 200 for equity symbol, got {response.status_code}"
+    )
+    mock_fetch.assert_not_called(), (
+        "fetch_greeks must NOT be called for an equity symbol (no option-chain request)"
+    )
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data.get(key) == _DASH, (
+            f"Expected '—' for key '{key}' on equity symbol, got: {data.get(key)!r}"
+        )
+
+
+def test_get_greeks_returns_all_dashes_for_garbage_symbol(client):
+    """An unrecognised/garbage symbol must return HTTP 200 with all five greeks
+    as '—' and must NOT raise or call the option-chain API."""
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        response = client.get("/api/greeks/NOT_AN_OCC_SYMBOL_AT_ALL")
+
+    assert response.status_code == 200
+    mock_fetch.assert_not_called()
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data.get(key) == _DASH, (
+            f"Expected '—' for '{key}' on garbage symbol, got: {data.get(key)!r}"
+        )
+
+
+def test_get_greeks_returns_dashes_gracefully_when_fetch_greeks_returns_dashes(client):
+    """Even when fetch_greeks returns all-dashes (cert sandbox scenario),
+    the route must return 200 with those dash values transparently."""
+    all_dashes = {k: _DASH for k in _GREEKS_KEYS}
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = all_dashes
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data[key] == _DASH
+
+
+# --- Edge-case route tests (Phase 4) ---
+
+
+def test_get_greeks_zero_value_greeks_returned_verbatim(client):
+    """When fetch_greeks returns a zero-value greek (e.g. delta '0'), the route
+    must NOT replace it with the dash sentinel.  Verifies the route passes the
+    fetch_greeks result straight through without filtering zero values."""
+    zero_greeks = {k: "0" for k in _GREEKS_KEYS}
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = zero_greeks
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    data = response.json()
+    for key in _GREEKS_KEYS:
+        assert data[key] == "0", (
+            f"Expected '0' for key '{key}' (zero is a valid greek), "
+            f"got {data[key]!r} — route must not sentinel zero values"
+        )
+
+
+def test_get_greeks_passes_occ_symbol_verbatim_to_fetch_greeks(client):
+    """The OCC symbol in the URL path (including embedded spaces decoded by
+    FastAPI) must be forwarded to fetch_greeks exactly as received — no
+    transformation of the symbol before the call."""
+    from dashboard.app import app
+    app.state.session_token = "verbatim-token"
+
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = {k: "0.1" for k in _GREEKS_KEYS}
+        client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    mock_fetch.assert_called_once()
+    # Accept either positional or keyword call style
+    args = mock_fetch.call_args[0]
+    kwargs = mock_fetch.call_args[1] if mock_fetch.call_args[1] else {}
+    called_symbol = kwargs.get("symbol") or (args[1] if len(args) > 1 else None)
+    assert called_symbol == _OCC_SYMBOL, (
+        f"fetch_greeks must receive the OCC symbol verbatim; "
+        f"expected {_OCC_SYMBOL!r}, got {called_symbol!r}"
+    )
+
+
+def test_get_greeks_partial_greeks_passed_through_unchanged(client):
+    """When fetch_greeks returns a mix of real values and '—' (partial greeks),
+    the route must forward that mixed dict verbatim — no normalisation."""
+    partial = {"delta": "0.42", "gamma": _DASH, "theta": _DASH, "vega": "0.12", "iv": _DASH}
+    with patch("dashboard.app.fetch_greeks", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = partial
+        response = client.get(f"/api/greeks/{_OCC_SYMBOL}")
+
+    assert response.status_code == 200
+    assert response.json() == partial, (
+        "Route must return the fetch_greeks result unchanged; "
+        f"expected {partial}, got {response.json()}"
     )
