@@ -728,7 +728,7 @@ def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
     response = client.get("/api/chart/UNKNWN")
     assert response.status_code == 200
     data = response.json()
-    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}, (
+    assert data == {"labels": [], "open": [], "high": [], "low": [], "close": [], "ema_short": [], "ema_long": []}, (
         f"Expected empty-array dict for unknown symbol; got {data}"
     )
 
@@ -1075,6 +1075,273 @@ def test_get_greeks_zero_value_greeks_returned_verbatim(client):
         )
 
 
+# =============================================================================
+# Issue #22 — FAILING tests (RED phase) — route behaviors
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Behavior 6: /api/chart/{symbol} serialization shape includes OHLC keys
+# ---------------------------------------------------------------------------
+
+def test_get_chart_response_includes_open_key(client):
+    """GET /api/chart/{symbol} JSON response must include an 'open' key."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22", None)
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL22{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL22")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22", None)
+    assert response.status_code == 200
+    data = response.json()
+    assert "open" in data, (
+        f"GET /api/chart response must include 'open' key; got keys: {list(data.keys())}"
+    )
+
+
+def test_get_chart_response_includes_high_key(client):
+    """GET /api/chart/{symbol} JSON response must include a 'high' key."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22H", None)
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL22H{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL22H")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22H", None)
+    assert response.status_code == 200
+    data = response.json()
+    assert "high" in data, (
+        f"GET /api/chart response must include 'high' key; got keys: {list(data.keys())}"
+    )
+
+
+def test_get_chart_response_includes_low_key(client):
+    """GET /api/chart/{symbol} JSON response must include a 'low' key."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22L", None)
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL22L{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL22L")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22L", None)
+    assert response.status_code == 200
+    data = response.json()
+    assert "low" in data, (
+        f"GET /api/chart response must include 'low' key; got keys: {list(data.keys())}"
+    )
+
+
+def test_get_chart_response_ohlc_arrays_same_length_as_close(client):
+    """open/high/low arrays in the HTTP response must be the same length as close."""
+    from dashboard.app import app
+    sym = "SPY22"
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop(sym, None)
+    closes = [450.0, 451.0, 452.0]
+    for i, c in enumerate(closes):
+        app.state.dashboard.on_candle({
+            "eventSymbol": f"{sym}{{=d}}",
+            "time": i,
+            "open": c - 1.0, "high": c + 2.0, "low": c - 2.0, "close": c,
+            "volume": 5_000_000,
+        })
+    response = client.get(f"/api/chart/{sym}")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop(sym, None)
+    assert response.status_code == 200
+    data = response.json()
+    n = len(data["close"])
+    assert len(data["open"]) == n, f"open length must equal close length {n}"
+    assert len(data["high"]) == n, f"high length must equal close length {n}"
+    assert len(data["low"]) == n, f"low length must equal close length {n}"
+
+
+def test_get_chart_empty_symbol_response_includes_ohlc_empty_arrays(client):
+    """Unknown symbol response must include open/high/low keys (all empty arrays)."""
+    response = client.get("/api/chart/UNKWNOHLC")
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("open") == [], f"Expected empty open array for unknown symbol; got {data.get('open')}"
+    assert data.get("high") == [], f"Expected empty high array for unknown symbol; got {data.get('high')}"
+    assert data.get("low") == [], f"Expected empty low array for unknown symbol; got {data.get('low')}"
+
+
+# ---------------------------------------------------------------------------
+# Behavior 4: Single-symbol candle scope — chart route swaps subscription
+# ---------------------------------------------------------------------------
+
+def test_get_chart_removes_previous_candle_subscription_before_adding_new():
+    """When /api/chart/{symbolB} is called after {symbolA}, the route must
+    call remove_candle(symbolA) before add_candle(symbolB) so at most one
+    symbol streams candles at a time.  Verified via a fake streamer recording
+    the sequence of add/remove calls."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    # Install the fake streamer
+    original_streamer = getattr(app.state, "streamer", None)
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            c.get("/api/chart/AAPL")
+            calls.clear()  # reset — only care about the second call
+            c.get("/api/chart/TSLA")
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        else:
+            del app.state.streamer
+
+    # After fetching TSLA, AAPL's candle subscription must have been removed
+    remove_calls = [sym for op, sym in calls if op == "remove"]
+    assert "AAPL" in remove_calls, (
+        f"Route must call remove_candle('AAPL') before subscribing to TSLA; "
+        f"recorded calls: {calls}"
+    )
+
+    # And TSLA must have been added
+    add_calls = [sym for op, sym in calls if op == "add"]
+    assert "TSLA" in add_calls, (
+        f"Route must call add_candle('TSLA') after removing AAPL; "
+        f"recorded calls: {calls}"
+    )
+
+
+def test_get_chart_remove_called_before_add_in_sequence():
+    """The remove must happen BEFORE the add in the call sequence."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    original_streamer = getattr(app.state, "streamer", None)
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            c.get("/api/chart/AAPL")
+            calls.clear()
+            c.get("/api/chart/TSLA")
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        else:
+            del app.state.streamer
+
+    # Find positions of remove(AAPL) and add(TSLA) in the call sequence
+    remove_idx = next(
+        (i for i, (op, sym) in enumerate(calls) if op == "remove" and sym == "AAPL"), None
+    )
+    add_idx = next(
+        (i for i, (op, sym) in enumerate(calls) if op == "add" and sym == "TSLA"), None
+    )
+    assert remove_idx is not None, f"remove_candle('AAPL') not found in calls: {calls}"
+    assert add_idx is not None, f"add_candle('TSLA') not found in calls: {calls}"
+    assert remove_idx < add_idx, (
+        f"remove_candle must be called BEFORE add_candle; "
+        f"remove at index {remove_idx}, add at index {add_idx}; calls: {calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavior 5 (blip root-cause fix): _refresh re-applies last-known price
+# ---------------------------------------------------------------------------
+
+def test_refresh_preserves_last_known_price_after_fetch_positions():
+    """After a simulated _refresh where fetch_positions returns rows with
+    current_price=None, the last-known mark from state.quotes must be
+    re-applied so the broadcast positions payload carries non-null current_price."""
+    from dashboard.app import app, _refresh
+    from unittest.mock import AsyncMock, patch
+
+    app.state.session_token = "fake-token"
+
+    # Pre-seed a live quote for AAPL at mark=155.0
+    from src.models import PriceEvent
+    app.state.dashboard.on_quote(
+        PriceEvent(symbol="AAPL", last=155.0, bid=154.0, ask=156.0, timestamp=1.0)
+    )
+    # Verify the quote was stored
+    assert "AAPL" in app.state.dashboard.quotes, "AAPL quote must be in state.quotes"
+
+    # Set up positions
+    fresh_positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,  # fresh from API — always None
+            "pl": None,
+        }
+    ]
+
+    captured = []
+
+    async def spy_broadcast(event_name, data):
+        captured.append((event_name, data))
+
+    app.state.dashboard.broadcast = spy_broadcast
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {
+            "account_number": "X", "net_liquidating_value": "0", "buying_power": "0"
+        }
+        mock_pos.return_value = fresh_positions
+        mock_ord.return_value = []
+        asyncio.run(_refresh(app))
+
+    del app.state.dashboard.broadcast
+
+    positions_events = [(name, data) for name, data in captured if name == "positions"]
+    assert len(positions_events) == 1, "Expected exactly one 'positions' broadcast"
+
+    _, broadcast_data = positions_events[0]
+    assert isinstance(broadcast_data, list), "positions broadcast must be a list"
+    assert len(broadcast_data) == 1, "Expected one position in the broadcast"
+
+    pos = broadcast_data[0]
+    assert pos["current_price"] is not None, (
+        "_refresh must re-apply the last-known mark from state.quotes before broadcast; "
+        f"current_price must not be None — got {pos['current_price']!r}"
+    )
+    assert pos["current_price"] == pytest.approx(155.0), (
+        f"current_price must equal last-known mark 155.0; got {pos['current_price']}"
+    )
+
+
 def test_get_greeks_passes_occ_symbol_verbatim_to_fetch_greeks(client):
     """The OCC symbol in the URL path (including embedded spaces decoded by
     FastAPI) must be forwarded to fetch_greeks exactly as received — no
@@ -1110,3 +1377,378 @@ def test_get_greeks_partial_greeks_passed_through_unchanged(client):
         "Route must return the fetch_greeks result unchanged; "
         f"expected {partial}, got {response.json()}"
     )
+
+
+# =============================================================================
+# Issue #22 — Phase 4: additional edge / error-path route tests
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Single-symbol scope: first-ever selection and same-symbol reselect
+# ---------------------------------------------------------------------------
+
+def test_get_chart_first_selection_no_crash():
+    """The very first GET /api/chart/{symbol} (no prior active_candle_symbol) must
+    not raise and must return 200.  The route uses getattr(..., None) so a missing
+    active_candle_symbol is handled gracefully without remove_candle being called."""
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    original_streamer = getattr(app.state, "streamer", None)
+    # Wipe any prior active symbol to simulate a fresh start
+    had_active = hasattr(app.state, "active_candle_symbol")
+    original_active = getattr(app.state, "active_candle_symbol", None)
+    if had_active:
+        del app.state.active_candle_symbol
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            response = c.get("/api/chart/AAPL")
+    except Exception as exc:
+        pytest.fail(f"First /api/chart selection must not raise: {exc!r}")
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        elif hasattr(app.state, "streamer"):
+            del app.state.streamer
+        if had_active and original_active is not None:
+            app.state.active_candle_symbol = original_active
+        elif not had_active and hasattr(app.state, "active_candle_symbol"):
+            del app.state.active_candle_symbol
+
+    assert response.status_code == 200, (
+        f"First /api/chart selection must return 200; got {response.status_code}"
+    )
+    # remove_candle must NOT have been called (no previous symbol to remove)
+    remove_calls = [sym for op, sym in calls if op == "remove"]
+    assert len(remove_calls) == 0, (
+        "First selection must not call remove_candle (no prior active symbol); "
+        f"got remove calls: {remove_calls}"
+    )
+
+
+def test_get_chart_same_symbol_twice_no_spurious_remove():
+    """Requesting /api/chart/{symbol} twice for the SAME symbol must not call
+    remove_candle for that symbol (prev == new, so the guard must skip the remove)."""
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    original_streamer = getattr(app.state, "streamer", None)
+    had_active = hasattr(app.state, "active_candle_symbol")
+    original_active = getattr(app.state, "active_candle_symbol", None)
+    if had_active:
+        del app.state.active_candle_symbol
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            c.get("/api/chart/AAPL")
+            calls.clear()           # only care about second request
+            c.get("/api/chart/AAPL")
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        elif hasattr(app.state, "streamer"):
+            del app.state.streamer
+        if had_active and original_active is not None:
+            app.state.active_candle_symbol = original_active
+        elif not had_active and hasattr(app.state, "active_candle_symbol"):
+            del app.state.active_candle_symbol
+
+    remove_calls = [sym for op, sym in calls if op == "remove"]
+    assert "AAPL" not in remove_calls, (
+        "Reselecting the same symbol must NOT call remove_candle for it; "
+        f"got calls: {calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Blip fix: _refresh with empty quotes and position symbol not in quotes
+# ---------------------------------------------------------------------------
+
+def test_refresh_with_empty_quotes_does_not_crash(client):
+    """_refresh must not crash when state.quotes is empty (no live quotes yet).
+    The blip-fix loop iterates state.quotes — empty dict must be a harmless no-op."""
+    from dashboard.app import app, _refresh
+
+    app.state.session_token = "fake-token"
+    # Clear quotes to simulate pre-quote state
+    app.state.dashboard.quotes.clear()
+
+    fresh_positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+
+    captured = []
+
+    async def spy_broadcast(event_name, data):
+        captured.append((event_name, data))
+
+    app.state.dashboard.broadcast = spy_broadcast
+
+    try:
+        with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+             patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+             patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+            mock_bal.return_value = {
+                "account_number": "X", "net_liquidating_value": "0", "buying_power": "0"
+            }
+            mock_pos.return_value = fresh_positions
+            mock_ord.return_value = []
+            asyncio.run(_refresh(app))
+    except Exception as exc:
+        pytest.fail(f"_refresh with empty state.quotes must not raise: {exc!r}")
+    finally:
+        del app.state.dashboard.broadcast
+
+    positions_events = [(n, d) for n, d in captured if n == "positions"]
+    assert len(positions_events) == 1, (
+        "_refresh must still broadcast positions even when quotes dict is empty"
+    )
+
+
+def test_refresh_position_symbol_not_in_quotes_keeps_none_price(client):
+    """_refresh re-applies quotes only for symbols that have a known quote mark.
+    A position whose symbol has no entry in state.quotes must keep current_price=None
+    (no crash, no spurious price insertion)."""
+    from dashboard.app import app, _refresh
+
+    app.state.session_token = "fake-token"
+    # Ensure AAPL has no quote
+    app.state.dashboard.quotes.pop("AAPL", None)
+
+    fresh_positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+
+    captured = []
+
+    async def spy_broadcast(event_name, data):
+        captured.append((event_name, data))
+
+    app.state.dashboard.broadcast = spy_broadcast
+
+    try:
+        with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+             patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+             patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+            mock_bal.return_value = {
+                "account_number": "X", "net_liquidating_value": "0", "buying_power": "0"
+            }
+            mock_pos.return_value = fresh_positions
+            mock_ord.return_value = []
+            asyncio.run(_refresh(app))
+    finally:
+        del app.state.dashboard.broadcast
+
+    positions_events = [(n, d) for n, d in captured if n == "positions"]
+    assert len(positions_events) == 1
+    pos = positions_events[0][1][0]
+    assert pos["current_price"] is None, (
+        "Position with no quote must keep current_price=None after _refresh; "
+        f"got {pos['current_price']!r}"
+    )
+
+
+# =============================================================================
+# Issue #22 — Phase 4 contract-gap audit (route layer)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Contract gap A: fetch_positions supplies 'pl': None — template contract
+#
+# fetch_positions returns {symbol, instrument_type, quantity, avg_cost,
+# current_price: None, pl: None}.  The index.html template reads pos.pl in a
+# comparison; if 'pl' were absent Jinja2 would raise UndefinedError.
+# All prior template tests inject 'pl' directly — this test uses the exact
+# fetch_positions output shape to guard that the key is always present.
+# ---------------------------------------------------------------------------
+
+def test_template_renders_with_fetch_positions_output_shape(client):
+    """The index template must render without error when positions have exactly
+    the shape returned by fetch_positions: {symbol, instrument_type, quantity,
+    avg_cost, current_price: None, pl: None}.
+
+    Prior template tests inject numeric pl values (e.g. 50.0) that bypass the
+    None path.  This test verifies that the real fetch_positions output shape
+    (both sentinel fields as None) renders cleanly and produces a neutral chip."""
+    from dashboard.app import app
+
+    # Exact shape that fetch_positions returns
+    app.state.dashboard.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+    try:
+        response = client.get("/")
+    finally:
+        app.state.dashboard.positions = []
+
+    assert response.status_code == 200, (
+        "Template must render HTTP 200 for positions with pl=None, current_price=None "
+        f"(exact fetch_positions output shape); got status {response.status_code}"
+    )
+    assert 'class="chip neutral"' in response.text, (
+        "Template must render neutral chip when pl=None (no P&L computed yet)"
+    )
+    # Mark cell must show dash when current_price=None
+    assert "<td" in response.text, "Table row must be rendered for the position"
+
+
+# =============================================================================
+# Phase 5 review fixes — TDD route tests (RED phase)
+# =============================================================================
+
+# --- Fix 2 [Security M1 + NT2]: evict previous symbol in-memory state on swap ---
+
+def test_get_chart_symbol_swap_evicts_previous_symbol_candle_state():
+    """After fetching /api/chart/A then /api/chart/B, state.candles must no longer
+    contain key 'A' (and the two throttle dicts must not contain 'A'), while 'B'
+    is retained.  This enforces the design's bounded-memory claim."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    original_streamer = getattr(app.state, "streamer", None)
+    had_active = hasattr(app.state, "active_candle_symbol")
+    original_active = getattr(app.state, "active_candle_symbol", None)
+    if had_active:
+        del app.state.active_candle_symbol
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            # Seed candles for both symbols so buckets exist (must be inside context)
+            app.state.dashboard.on_candle({
+                "eventSymbol": "EVICTA{=d}", "time": 1,
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 100,
+            })
+            app.state.dashboard.on_candle({
+                "eventSymbol": "EVICTB{=d}", "time": 1,
+                "open": 20.0, "high": 21.0, "low": 19.0, "close": 20.5, "volume": 100,
+            })
+            c.get("/api/chart/EVICTA")
+            c.get("/api/chart/EVICTB")
+
+            state = app.state.dashboard
+            assert "EVICTA" not in state.candles, (
+                "After switching from EVICTA to EVICTB, state.candles must not contain EVICTA"
+            )
+            assert "EVICTA" not in state._candle_last_broadcast, (
+                "After switching from EVICTA to EVICTB, _candle_last_broadcast must not contain EVICTA"
+            )
+            assert "EVICTA" not in state._candle_last_time, (
+                "After switching from EVICTA to EVICTB, _candle_last_time must not contain EVICTA"
+            )
+            # The current symbol's bucket must be retained
+            assert "EVICTB" in state.candles, (
+                "state.candles must retain the currently-active symbol EVICTB"
+            )
+
+            # Clean up seeded candle data
+            state.candles.pop("EVICTA", None)
+            state.candles.pop("EVICTB", None)
+            state._candle_last_broadcast.pop("EVICTA", None)
+            state._candle_last_broadcast.pop("EVICTB", None)
+            state._candle_last_time.pop("EVICTA", None)
+            state._candle_last_time.pop("EVICTB", None)
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        elif hasattr(app.state, "streamer"):
+            del app.state.streamer
+        if had_active and original_active is not None:
+            app.state.active_candle_symbol = original_active
+        elif not had_active and hasattr(app.state, "active_candle_symbol"):
+            del app.state.active_candle_symbol
+
+
+def test_get_chart_same_symbol_reselect_does_not_evict():
+    """Selecting the same symbol again (prev == new) must NOT evict its candle state."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time): pass
+        def remove_candle(self, symbol): pass
+
+    original_streamer = getattr(app.state, "streamer", None)
+    had_active = hasattr(app.state, "active_candle_symbol")
+    original_active = getattr(app.state, "active_candle_symbol", None)
+    if had_active:
+        del app.state.active_candle_symbol
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            # Seed candles for symbol (must be inside TestClient context)
+            app.state.dashboard.on_candle({
+                "eventSymbol": "NOEVICT{=d}", "time": 1,
+                "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5, "volume": 100,
+            })
+            c.get("/api/chart/NOEVICT")
+            c.get("/api/chart/NOEVICT")  # reselect same symbol
+
+            state = app.state.dashboard
+            assert "NOEVICT" in state.candles, (
+                "Reselecting the same symbol must NOT evict its candle bucket"
+            )
+
+            # Clean up
+            state.candles.pop("NOEVICT", None)
+            state._candle_last_broadcast.pop("NOEVICT", None)
+            state._candle_last_time.pop("NOEVICT", None)
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        elif hasattr(app.state, "streamer"):
+            del app.state.streamer
+        if had_active and original_active is not None:
+            app.state.active_candle_symbol = original_active
+        elif not had_active and hasattr(app.state, "active_candle_symbol"):
+            del app.state.active_candle_symbol

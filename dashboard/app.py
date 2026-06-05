@@ -38,6 +38,14 @@ async def _refresh(app: FastAPI) -> None:
         state.net_liquidating_value = balance["net_liquidating_value"]
         state.buying_power = balance["buying_power"]
         state.positions = await fetch_positions(token, acct)
+        # Re-apply last-known mark so the 15s rebuild doesn't wipe live prices to None
+        # (root-cause fix for mark/P&L blip — AC8).
+        for pos in state.positions:
+            sym = pos["symbol"]
+            if sym in state.quotes:
+                mark = state.quotes[sym].get("last")
+                if mark is not None:
+                    state.update_quote(sym, mark)
         all_orders = await fetch_orders(token, acct)
         state.orders = [o for o in all_orders if o.get("status") in _OPEN_ORDER_STATUSES]
         await state.broadcast("account", state.get_account_summary())
@@ -186,13 +194,16 @@ async def get_chart(symbol: str, request: Request):
     if not _re.fullmatch(r"[A-Za-z0-9.\-]{1,15}", symbol):
         return JSONResponse(status_code=400, content={"error": "invalid symbol"})
     state: DashboardState = request.app.state.dashboard
-    # Trigger daily candle subscription if streamer is available.
-    # "Subscribe on selection" pattern: first chart fetch for a symbol
-    # triggers the candle feed subscription. Idempotent — streamer
-    # handles duplicate subscriptions gracefully.
+    # Single-symbol candle scope: swap candle subscription to the new symbol
+    # so at most one symbol streams live candle data at a time (AC5).
     if hasattr(request.app.state, "streamer"):
+        prev = getattr(request.app.state, "active_candle_symbol", None)
+        if prev is not None and prev != symbol:
+            request.app.state.streamer.remove_candle(prev)
+            state.evict_candle_state(prev)
         from_time = int(time.time() - 60 * 86400)
         request.app.state.streamer.add_candle(symbol, from_time)
+        request.app.state.active_candle_symbol = symbol
     return state.get_chart_data(symbol)
 
 

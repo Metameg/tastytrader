@@ -316,8 +316,14 @@
             </div>
           </div>
 
-          <!-- Chart area (issue #7) — hidden until candle data arrives -->
+          <!-- Chart area (issue #22) — hidden until candle data arrives -->
           <div class="detail-chart-area detail-chart-hidden" id="detail-chart-area">
+            <div class="chart-area-header">
+              <div class="chart-mode-toggle" role="group" aria-label="Chart mode">
+                <button class="chart-mode-btn active" data-chart-mode="line" type="button">Line</button>
+                <button class="chart-mode-btn" data-chart-mode="candle" type="button">Candles</button>
+              </div>
+            </div>
             <canvas class="detail-chart-canvas" id="detail-chart-canvas" width="240" height="140"></canvas>
           </div>
 
