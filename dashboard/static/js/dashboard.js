@@ -4,7 +4,12 @@ let es;
 let selectedSymbol = null;
 let selectedRow = null;
 let currentChartData = null;
-let currentMode = localStorage.getItem('chartMode') || 'line';
+let currentMode;
+try {
+  currentMode = localStorage.getItem('chartMode') || 'line';
+} catch {
+  currentMode = 'line';
+}
 
 // Set initial active state on chart-mode buttons
 document.querySelectorAll('.chart-mode-btn').forEach(btn => {
@@ -237,7 +242,7 @@ function buildRow(pos, isSubRow) {
   const parentAttr = isSubRow
     ? ` data-parent="${escapeHtml(pos.symbol.trim().match(/^([A-Z]+)/)?.[1] ?? '')}"`
     : '';
-  const mark = pos.current_price != null ? escapeHtml(pos.current_price) : '—';
+  const mark = pos.current_price != null ? fmtDollar(pos.current_price) : '—';
   return `<tr${cls} data-symbol="${escapeHtml(pos.symbol)}" data-instrument-type="${escapeHtml(pos.instrument_type)}" data-qty="${escapeHtml(pos.quantity)}" data-avg-cost="${escapeHtml(pos.avg_cost)}"${parentAttr}>
     <td>${escapeHtml(symDisplay)}</td>
     <td>${escapeHtml(pos.instrument_type)}</td>
@@ -332,7 +337,11 @@ document.addEventListener('click', e => {
   const btn = e.target.closest('.chart-mode-btn');
   if (!btn) return;
   currentMode = btn.dataset.chartMode;
-  localStorage.setItem('chartMode', currentMode);
+  try {
+    localStorage.setItem('chartMode', currentMode);
+  } catch {
+    // Ignore SecurityError in Safari/Firefox private mode
+  }
   document.querySelectorAll('.chart-mode-btn').forEach(b =>
     b.classList.toggle('active', b === btn)
   );

@@ -201,13 +201,17 @@
       const bodyColors = open.map((o, i) =>
         close[i] >= o ? colorGreen : colorRed
       );
-      // datasets[0] = wick, [1] = body, [2] = ema_short, [3] = ema_long
-      _chart.data.datasets[0].data = open.map((_, i) => [low[i], high[i]]);
-      _chart.data.datasets[1].data = open.map((o, i) => [o, close[i]]);
-      _chart.data.datasets[1].backgroundColor = bodyColors;
+      const wickDs = _chart.data.datasets.find(d => d.label === 'wick');
+      const bodyDs = _chart.data.datasets.find(d => d.label === 'body');
+      if (wickDs) wickDs.data = open.map((_, i) => [low[i], high[i]]);
+      if (bodyDs) {
+        bodyDs.data = open.map((o, i) => [o, close[i]]);
+        bodyDs.backgroundColor = bodyColors;
+      }
     } else {
-      // datasets[0] = close
-      _chart.data.datasets[0].data = close;
+      // Line mode: dataset labeled 'close'
+      const closeDs = _chart.data.datasets.find(d => d.label === 'close');
+      if (closeDs) closeDs.data = close;
     }
 
     _chart.update('none');
