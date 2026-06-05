@@ -3,6 +3,13 @@ const _GREEKS_EMPTY = { delta: '—', gamma: '—', theta: '—', vega: '—', i
 let es;
 let selectedSymbol = null;
 let selectedRow = null;
+let currentChartData = null;
+let currentMode = localStorage.getItem('chartMode') || 'line';
+
+// Set initial active state on chart-mode buttons
+document.querySelectorAll('.chart-mode-btn').forEach(btn => {
+  btn.classList.toggle('active', btn.dataset.chartMode === currentMode);
+});
 
 function connect() {
   es = new EventSource('/stream/live');
@@ -17,6 +24,7 @@ function connect() {
 
   es.addEventListener('quote', e => handleQuote(JSON.parse(e.data)));
   es.addEventListener('positions', e => handlePositions(JSON.parse(e.data)));
+  es.addEventListener('candle', e => handleCandle(JSON.parse(e.data)));
 }
 
 function handleQuote(quote) {
@@ -294,9 +302,10 @@ document.addEventListener('click', e => {
       // symbol is captured from the closure at click time; selectedSymbol is the current
       // module-level selection. If they differ this response is stale — discard it.
       if (symbol !== selectedSymbol) return;
-      if (data.close && data.close.length > 0 && typeof window.updateChart === 'function') {
+      if (data.close && data.close.length > 0 && typeof window.renderChart === 'function') {
+        currentChartData = data;
         if (chartArea) chartArea.classList.remove('detail-chart-hidden');
-        window.updateChart(data.labels, data.close, data.ema_short, data.ema_long);
+        window.renderChart(currentMode, data);
       }
       // If arrays are empty, chart area stays hidden — no error
     })
@@ -317,5 +326,63 @@ document.addEventListener('click', e => {
       });
   }
 });
+
+// Chart mode toggle: Line | Candles
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.chart-mode-btn');
+  if (!btn) return;
+  currentMode = btn.dataset.chartMode;
+  localStorage.setItem('chartMode', currentMode);
+  document.querySelectorAll('.chart-mode-btn').forEach(b =>
+    b.classList.toggle('active', b === btn)
+  );
+  if (currentChartData && typeof window.renderChart === 'function') {
+    window.renderChart(currentMode, currentChartData);
+  }
+});
+
+/**
+ * Handle a live 'candle' SSE event — update the cached chart data for the
+ * selected symbol and refresh the chart in-place.
+ */
+function handleCandle(ohlc) {
+  // Strip {=d} suffix to get plain symbol
+  const rawSym = ohlc.eventSymbol || '';
+  const plainSym = rawSym.includes('{') ? rawSym.split('{')[0] : rawSym;
+  if (plainSym !== selectedSymbol) return;
+  if (!currentChartData) return;
+
+  const lastIdx = currentChartData.labels.length - 1;
+  if (lastIdx < 0) return;
+
+  const candleTime = ohlc.time != null ? ohlc.time : null;
+  const lastCachedTime = currentChartData.labels[lastIdx];
+
+  if (candleTime !== null && candleTime !== lastCachedTime) {
+    // New day: append bar, trim to _MAX_CANDLES window (90)
+    currentChartData.labels.push(candleTime);
+    currentChartData.open.push(ohlc.open  != null ? ohlc.open  : ohlc.close);
+    currentChartData.high.push(ohlc.high  != null ? ohlc.high  : ohlc.close);
+    currentChartData.low.push(ohlc.low   != null ? ohlc.low   : ohlc.close);
+    currentChartData.close.push(ohlc.close);
+    currentChartData.ema_short.push(null);
+    currentChartData.ema_long.push(null);
+    if (currentChartData.labels.length > 90) {
+      ['labels', 'open', 'high', 'low', 'close', 'ema_short', 'ema_long'].forEach(k => {
+        currentChartData[k].shift();
+      });
+    }
+  } else {
+    // Same day: update the last bar in-place
+    currentChartData.open[lastIdx]  = ohlc.open  != null ? ohlc.open  : currentChartData.open[lastIdx];
+    currentChartData.high[lastIdx]  = ohlc.high  != null ? ohlc.high  : currentChartData.high[lastIdx];
+    currentChartData.low[lastIdx]   = ohlc.low   != null ? ohlc.low   : currentChartData.low[lastIdx];
+    currentChartData.close[lastIdx] = ohlc.close != null ? ohlc.close : currentChartData.close[lastIdx];
+  }
+
+  if (typeof window.updateLastCandle === 'function') {
+    window.updateLastCandle(currentChartData, currentMode);
+  }
+}
 
 connect();

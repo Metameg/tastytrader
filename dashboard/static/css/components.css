@@ -754,6 +754,52 @@ input[type=number] { -moz-appearance: textfield; }
   height: 140px;
 }
 
+/* Chart-mode toggle (Line | Candles) — issue #22 */
+.chart-area-header {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: var(--sp-1);
+}
+
+.chart-mode-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.chart-mode-btn {
+  flex: 1;
+  padding: 3px 10px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color .12s, background .12s;
+}
+
+.chart-mode-btn:hover {
+  color: var(--text-dim);
+}
+
+.chart-mode-btn.active {
+  background: var(--bg-surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.chart-mode-btn:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
 /* Selected row highlight in positions table */
 #positions-table tr[data-selected] {
   background: var(--bg-hover);
