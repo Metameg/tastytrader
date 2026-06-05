@@ -728,7 +728,7 @@ def test_get_chart_returns_200_with_empty_arrays_when_no_data(client):
     response = client.get("/api/chart/UNKNWN")
     assert response.status_code == 200
     data = response.json()
-    assert data == {"labels": [], "close": [], "ema_short": [], "ema_long": []}, (
+    assert data == {"labels": [], "open": [], "high": [], "low": [], "close": [], "ema_short": [], "ema_long": []}, (
         f"Expected empty-array dict for unknown symbol; got {data}"
     )
 
@@ -1073,6 +1073,273 @@ def test_get_greeks_zero_value_greeks_returned_verbatim(client):
             f"Expected '0' for key '{key}' (zero is a valid greek), "
             f"got {data[key]!r} — route must not sentinel zero values"
         )
+
+
+# =============================================================================
+# Issue #22 — FAILING tests (RED phase) — route behaviors
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# Behavior 6: /api/chart/{symbol} serialization shape includes OHLC keys
+# ---------------------------------------------------------------------------
+
+def test_get_chart_response_includes_open_key(client):
+    """GET /api/chart/{symbol} JSON response must include an 'open' key."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22", None)
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL22{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL22")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22", None)
+    assert response.status_code == 200
+    data = response.json()
+    assert "open" in data, (
+        f"GET /api/chart response must include 'open' key; got keys: {list(data.keys())}"
+    )
+
+
+def test_get_chart_response_includes_high_key(client):
+    """GET /api/chart/{symbol} JSON response must include a 'high' key."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22H", None)
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL22H{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL22H")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22H", None)
+    assert response.status_code == 200
+    data = response.json()
+    assert "high" in data, (
+        f"GET /api/chart response must include 'high' key; got keys: {list(data.keys())}"
+    )
+
+
+def test_get_chart_response_includes_low_key(client):
+    """GET /api/chart/{symbol} JSON response must include a 'low' key."""
+    from dashboard.app import app
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22L", None)
+    app.state.dashboard.on_candle({
+        "eventSymbol": "AAPL22L{=d}",
+        "time": 1,
+        "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    response = client.get("/api/chart/AAPL22L")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop("AAPL22L", None)
+    assert response.status_code == 200
+    data = response.json()
+    assert "low" in data, (
+        f"GET /api/chart response must include 'low' key; got keys: {list(data.keys())}"
+    )
+
+
+def test_get_chart_response_ohlc_arrays_same_length_as_close(client):
+    """open/high/low arrays in the HTTP response must be the same length as close."""
+    from dashboard.app import app
+    sym = "SPY22"
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop(sym, None)
+    closes = [450.0, 451.0, 452.0]
+    for i, c in enumerate(closes):
+        app.state.dashboard.on_candle({
+            "eventSymbol": f"{sym}{{=d}}",
+            "time": i,
+            "open": c - 1.0, "high": c + 2.0, "low": c - 2.0, "close": c,
+            "volume": 5_000_000,
+        })
+    response = client.get(f"/api/chart/{sym}")
+    if hasattr(app.state.dashboard, "candles"):
+        app.state.dashboard.candles.pop(sym, None)
+    assert response.status_code == 200
+    data = response.json()
+    n = len(data["close"])
+    assert len(data["open"]) == n, f"open length must equal close length {n}"
+    assert len(data["high"]) == n, f"high length must equal close length {n}"
+    assert len(data["low"]) == n, f"low length must equal close length {n}"
+
+
+def test_get_chart_empty_symbol_response_includes_ohlc_empty_arrays(client):
+    """Unknown symbol response must include open/high/low keys (all empty arrays)."""
+    response = client.get("/api/chart/UNKWNOHLC")
+    assert response.status_code == 200
+    data = response.json()
+    assert data.get("open") == [], f"Expected empty open array for unknown symbol; got {data.get('open')}"
+    assert data.get("high") == [], f"Expected empty high array for unknown symbol; got {data.get('high')}"
+    assert data.get("low") == [], f"Expected empty low array for unknown symbol; got {data.get('low')}"
+
+
+# ---------------------------------------------------------------------------
+# Behavior 4: Single-symbol candle scope — chart route swaps subscription
+# ---------------------------------------------------------------------------
+
+def test_get_chart_removes_previous_candle_subscription_before_adding_new():
+    """When /api/chart/{symbolB} is called after {symbolA}, the route must
+    call remove_candle(symbolA) before add_candle(symbolB) so at most one
+    symbol streams candles at a time.  Verified via a fake streamer recording
+    the sequence of add/remove calls."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    # Install the fake streamer
+    original_streamer = getattr(app.state, "streamer", None)
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            c.get("/api/chart/AAPL")
+            calls.clear()  # reset — only care about the second call
+            c.get("/api/chart/TSLA")
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        else:
+            del app.state.streamer
+
+    # After fetching TSLA, AAPL's candle subscription must have been removed
+    remove_calls = [sym for op, sym in calls if op == "remove"]
+    assert "AAPL" in remove_calls, (
+        f"Route must call remove_candle('AAPL') before subscribing to TSLA; "
+        f"recorded calls: {calls}"
+    )
+
+    # And TSLA must have been added
+    add_calls = [sym for op, sym in calls if op == "add"]
+    assert "TSLA" in add_calls, (
+        f"Route must call add_candle('TSLA') after removing AAPL; "
+        f"recorded calls: {calls}"
+    )
+
+
+def test_get_chart_remove_called_before_add_in_sequence():
+    """The remove must happen BEFORE the add in the call sequence."""
+    from fastapi.testclient import TestClient
+    from dashboard.app import app
+
+    calls = []
+
+    class FakeStreamer:
+        def add_candle(self, symbol, from_time):
+            calls.append(("add", symbol))
+
+        def remove_candle(self, symbol):
+            calls.append(("remove", symbol))
+
+    original_streamer = getattr(app.state, "streamer", None)
+    app.state.streamer = FakeStreamer()
+
+    try:
+        with TestClient(app) as c:
+            c.get("/api/chart/AAPL")
+            calls.clear()
+            c.get("/api/chart/TSLA")
+    finally:
+        if original_streamer is not None:
+            app.state.streamer = original_streamer
+        else:
+            del app.state.streamer
+
+    # Find positions of remove(AAPL) and add(TSLA) in the call sequence
+    remove_idx = next(
+        (i for i, (op, sym) in enumerate(calls) if op == "remove" and sym == "AAPL"), None
+    )
+    add_idx = next(
+        (i for i, (op, sym) in enumerate(calls) if op == "add" and sym == "TSLA"), None
+    )
+    assert remove_idx is not None, f"remove_candle('AAPL') not found in calls: {calls}"
+    assert add_idx is not None, f"add_candle('TSLA') not found in calls: {calls}"
+    assert remove_idx < add_idx, (
+        f"remove_candle must be called BEFORE add_candle; "
+        f"remove at index {remove_idx}, add at index {add_idx}; calls: {calls}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavior 5 (blip root-cause fix): _refresh re-applies last-known price
+# ---------------------------------------------------------------------------
+
+def test_refresh_preserves_last_known_price_after_fetch_positions():
+    """After a simulated _refresh where fetch_positions returns rows with
+    current_price=None, the last-known mark from state.quotes must be
+    re-applied so the broadcast positions payload carries non-null current_price."""
+    from dashboard.app import app, _refresh
+    from unittest.mock import AsyncMock, patch
+
+    app.state.session_token = "fake-token"
+
+    # Pre-seed a live quote for AAPL at mark=155.0
+    from src.models import PriceEvent
+    app.state.dashboard.on_quote(
+        PriceEvent(symbol="AAPL", last=155.0, bid=154.0, ask=156.0, timestamp=1.0)
+    )
+    # Verify the quote was stored
+    assert "AAPL" in app.state.dashboard.quotes, "AAPL quote must be in state.quotes"
+
+    # Set up positions
+    fresh_positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,  # fresh from API — always None
+            "pl": None,
+        }
+    ]
+
+    captured = []
+
+    async def spy_broadcast(event_name, data):
+        captured.append((event_name, data))
+
+    app.state.dashboard.broadcast = spy_broadcast
+
+    with patch("dashboard.app.fetch_balance", new_callable=AsyncMock) as mock_bal, \
+         patch("dashboard.app.fetch_positions", new_callable=AsyncMock) as mock_pos, \
+         patch("dashboard.app.fetch_orders", new_callable=AsyncMock) as mock_ord:
+        mock_bal.return_value = {
+            "account_number": "X", "net_liquidating_value": "0", "buying_power": "0"
+        }
+        mock_pos.return_value = fresh_positions
+        mock_ord.return_value = []
+        asyncio.run(_refresh(app))
+
+    del app.state.dashboard.broadcast
+
+    positions_events = [(name, data) for name, data in captured if name == "positions"]
+    assert len(positions_events) == 1, "Expected exactly one 'positions' broadcast"
+
+    _, broadcast_data = positions_events[0]
+    assert isinstance(broadcast_data, list), "positions broadcast must be a list"
+    assert len(broadcast_data) == 1, "Expected one position in the broadcast"
+
+    pos = broadcast_data[0]
+    assert pos["current_price"] is not None, (
+        "_refresh must re-apply the last-known mark from state.quotes before broadcast; "
+        f"current_price must not be None — got {pos['current_price']!r}"
+    )
+    assert pos["current_price"] == pytest.approx(155.0), (
+        f"current_price must equal last-known mark 155.0; got {pos['current_price']}"
+    )
 
 
 def test_get_greeks_passes_occ_symbol_verbatim_to_fetch_greeks(client):
