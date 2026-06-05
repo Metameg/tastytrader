@@ -3129,3 +3129,199 @@ def test_refresh_position_symbol_not_in_quotes_keeps_none_price():
         "Position with no quote entry must keep current_price=None; "
         f"got {fresh_positions[0]['current_price']!r}"
     )
+
+
+# =============================================================================
+# Issue #22 — Phase 4 contract-gap audit tests
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Contract gap A: fetch_positions must include 'pl': None — template contract
+#
+# The index.html template reads pos.pl.  If 'pl' is ever removed from the
+# fetch_positions return dict Jinja2 raises UndefinedError on first render.
+# This test pins the required shape so that removal is caught immediately.
+# ---------------------------------------------------------------------------
+
+async def test_fetch_positions_includes_pl_key_as_none():
+    """fetch_positions must return positions that include a 'pl' key (set to
+    None) so the index.html template's {% if pos.pl is not none and pos.pl != 0 %}
+    check does not raise UndefinedError.
+
+    Prior tests (test_fetch_positions_normalises_fields) check structural fields
+    but not 'pl'.  This test pins that 'pl': None is present so the template
+    contract is enforced at the API layer."""
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "data": {
+            "items": [
+                {
+                    "symbol": "AAPL",
+                    "instrument-type": "Equity",
+                    "quantity": "10",
+                    "average-open-price": "150.00",
+                }
+            ]
+        }
+    }
+    mock_client = AsyncMock()
+    mock_client.get.return_value = mock_resp
+
+    with patch("dashboard.api.httpx.AsyncClient") as mock_cls:
+        mock_cls.return_value.__aenter__.return_value = mock_client
+        positions = await fetch_positions(session_token="tok", account_number="5WX78966")
+
+    pos = positions[0]
+    # The template reads pos.pl — if 'pl' is absent the template crashes
+    assert "pl" in pos, (
+        "fetch_positions must include 'pl' key so the template does not raise "
+        "UndefinedError — the template's comparison `pos.pl is not none` requires "
+        "the key to exist (even as None)"
+    )
+    assert pos["pl"] is None, (
+        "fetch_positions must set 'pl': None (P&L is not known from the REST API; "
+        f"it is computed live via update_quote); got {pos['pl']!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Contract gap B: candle SSE broadcast payload must carry eventSymbol and OHLC
+# ---------------------------------------------------------------------------
+
+def test_on_candle_broadcast_data_contains_event_symbol():
+    """The 'candle' SSE event data broadcast by on_candle must include
+    'eventSymbol' (with the {=d} suffix).  dashboard.js handleCandle() reads
+    ohlc.eventSymbol to decide whether to act on the event — if this key is
+    absent, every live candle update is silently ignored regardless of symbol."""
+    import dashboard.state as state_mod
+
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    # Patch _now so the throttle allows broadcast on first call
+    original_now = state_mod._now
+    state_mod._now = lambda: 9999.0
+    try:
+        state.on_candle({
+            "eventType": "Candle",
+            "eventSymbol": "AAPL{=d}",
+            "time": 1_700_000_000,
+            "open": 150.0, "high": 155.0, "low": 148.0, "close": 153.0,
+            "volume": 1_000_000,
+        })
+    finally:
+        state_mod._now = original_now
+
+    assert not queue.empty(), "on_candle must broadcast to subscribers"
+    item = queue.get_nowait()
+    data = item["data"]
+    assert "eventSymbol" in data, (
+        "candle SSE broadcast payload must contain 'eventSymbol' — "
+        "handleCandle() reads ohlc.eventSymbol to filter by selected symbol; "
+        "absent key means every live candle update is silently ignored"
+    )
+    assert data["eventSymbol"] == "AAPL{=d}", (
+        f"eventSymbol in broadcast must be 'AAPL{{=d}}' (suffix preserved for frontend); "
+        f"got {data.get('eventSymbol')!r}"
+    )
+
+
+def test_on_candle_broadcast_data_contains_ohlc_and_time():
+    """candle SSE broadcast data must include open/high/low/close/time.
+    handleCandle() reads all five fields to update currentChartData in-place."""
+    import dashboard.state as state_mod
+
+    state = DashboardState()
+    queue: asyncio.Queue = asyncio.Queue()
+    state.subscribers.append(queue)
+
+    original_now = state_mod._now
+    state_mod._now = lambda: 9999.0
+    try:
+        state.on_candle({
+            "eventType": "Candle",
+            "eventSymbol": "TSLA{=d}",
+            "time": 1_700_086_400,
+            "open": 200.0, "high": 210.0, "low": 198.0, "close": 205.0,
+            "volume": 2_000_000,
+        })
+    finally:
+        state_mod._now = original_now
+
+    item = queue.get_nowait()
+    data = item["data"]
+    for field in ("open", "high", "low", "close", "time"):
+        assert field in data, (
+            f"candle SSE broadcast must include '{field}' so handleCandle() can "
+            f"update currentChartData['{field}'] in-place; absent key causes "
+            f"stale-value bugs in the browser"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Contract gap C: OHLC string values from DXLink — numeric strings coerce correctly
+# ---------------------------------------------------------------------------
+
+def test_get_chart_data_numeric_string_open_coerces_to_float():
+    """DXLink may send OHLC fields as strings (e.g. '149.0', not 149.0).
+    get_chart_data must successfully coerce a valid numeric string 'open' to float.
+    Tests the happy-path for _coerce_ohlc_field — existing tests only cover the
+    fallback case (NaN/Infinity strings) but not valid numeric strings."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": "149.0",   # valid numeric string as DXLink may send
+        "high": 155.0, "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert len(data["open"]) == 1, "open array must contain one entry"
+    assert isinstance(data["open"][0], float), (
+        f"numeric string open '149.0' must coerce to float; "
+        f"got type {type(data['open'][0]).__name__}"
+    )
+    assert data["open"][0] == pytest.approx(149.0), (
+        f"open '149.0' must coerce to 149.0; got {data['open'][0]}"
+    )
+
+
+def test_get_chart_data_numeric_string_high_coerces_to_float():
+    """DXLink may send 'high' as a numeric string — must coerce to float."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 149.0,
+        "high": "155.5",   # valid numeric string
+        "low": 148.0, "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert isinstance(data["high"][0], float), (
+        f"numeric string high '155.5' must coerce to float; "
+        f"got type {type(data['high'][0]).__name__}"
+    )
+    assert data["high"][0] == pytest.approx(155.5), (
+        f"high '155.5' must coerce to 155.5; got {data['high'][0]}"
+    )
+
+
+def test_get_chart_data_numeric_string_low_coerces_to_float():
+    """DXLink may send 'low' as a numeric string — must coerce to float."""
+    state = DashboardState()
+    state.on_candle({
+        "eventSymbol": "AAPL{=d}",
+        "time": 1,
+        "open": 149.0, "high": 155.0,
+        "low": "147.25",   # valid numeric string
+        "close": 153.0, "volume": 1_000_000,
+    })
+    data = state.get_chart_data("AAPL")
+    assert isinstance(data["low"][0], float), (
+        f"numeric string low '147.25' must coerce to float; "
+        f"got type {type(data['low'][0]).__name__}"
+    )
+    assert data["low"][0] == pytest.approx(147.25), (
+        f"low '147.25' must coerce to 147.25; got {data['low'][0]}"
+    )

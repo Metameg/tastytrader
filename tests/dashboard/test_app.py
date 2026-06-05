@@ -1579,3 +1579,54 @@ def test_refresh_position_symbol_not_in_quotes_keeps_none_price(client):
         "Position with no quote must keep current_price=None after _refresh; "
         f"got {pos['current_price']!r}"
     )
+
+
+# =============================================================================
+# Issue #22 — Phase 4 contract-gap audit (route layer)
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Contract gap A: fetch_positions supplies 'pl': None — template contract
+#
+# fetch_positions returns {symbol, instrument_type, quantity, avg_cost,
+# current_price: None, pl: None}.  The index.html template reads pos.pl in a
+# comparison; if 'pl' were absent Jinja2 would raise UndefinedError.
+# All prior template tests inject 'pl' directly — this test uses the exact
+# fetch_positions output shape to guard that the key is always present.
+# ---------------------------------------------------------------------------
+
+def test_template_renders_with_fetch_positions_output_shape(client):
+    """The index template must render without error when positions have exactly
+    the shape returned by fetch_positions: {symbol, instrument_type, quantity,
+    avg_cost, current_price: None, pl: None}.
+
+    Prior template tests inject numeric pl values (e.g. 50.0) that bypass the
+    None path.  This test verifies that the real fetch_positions output shape
+    (both sentinel fields as None) renders cleanly and produces a neutral chip."""
+    from dashboard.app import app
+
+    # Exact shape that fetch_positions returns
+    app.state.dashboard.positions = [
+        {
+            "symbol": "AAPL",
+            "instrument_type": "Equity",
+            "quantity": 10,
+            "avg_cost": "150.00",
+            "current_price": None,
+            "pl": None,
+        }
+    ]
+    try:
+        response = client.get("/")
+    finally:
+        app.state.dashboard.positions = []
+
+    assert response.status_code == 200, (
+        "Template must render HTTP 200 for positions with pl=None, current_price=None "
+        f"(exact fetch_positions output shape); got status {response.status_code}"
+    )
+    assert 'class="chip neutral"' in response.text, (
+        "Template must render neutral chip when pl=None (no P&L computed yet)"
+    )
+    # Mark cell must show dash when current_price=None
+    assert "<td" in response.text, "Table row must be rendered for the position"
